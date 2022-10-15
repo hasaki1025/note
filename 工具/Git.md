@@ -206,8 +206,8 @@
       
       
       $ git remote -v
-      demo    https://github.com/hasaki1025/git-demo.git (fetch)#用于拉取
-      demo    https://github.com/hasaki1025/git-demo.git (push)#用于push
+      demo1    https://github.com/hasaki1025/git-demo.git (fetch)#用于拉取
+      demo2    https://github.com/hasaki1025/git-demo.git (push)#用于push
       
       ```
 
