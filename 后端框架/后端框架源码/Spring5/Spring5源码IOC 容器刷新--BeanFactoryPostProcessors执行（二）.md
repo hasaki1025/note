@@ -460,6 +460,76 @@
                   调用liteconfig中的Bean03方法（第二次调用）：com.spring.IOC.POJO.Bean03@3ddc6915
                   ```
             
-                  
+            - ConfigurationClassParser解析配置类候选者
             
-                  
+              ```java
+              parser.parse(candidates);//解析所有候选者
+              
+              public void parse(Set<BeanDefinitionHolder> configCandidates) {
+                  for (BeanDefinitionHolder holder : configCandidates) {//遍历集合根据Beandefinition类型解析
+                      BeanDefinition bd = holder.getBeanDefinition();
+                      try {//根据BeanDefinition类型解析
+                          if (bd instanceof AnnotatedBeanDefinition) {
+                              parse(((AnnotatedBeanDefinition) bd).getMetadata(), holder.getBeanName());
+                          }
+                          else if (bd instanceof AbstractBeanDefinition && ((AbstractBeanDefinition) bd).hasBeanClass()) {
+                              parse(((AbstractBeanDefinition) bd).getBeanClass(), holder.getBeanName());
+                          }
+                          else {
+                              parse(bd.getBeanClassName(), holder.getBeanName());
+                          }
+                      }
+                      catch (BeanDefinitionStoreException ex) {
+                          throw ex;
+                      }
+                      catch (Throwable ex) {
+                          throw new BeanDefinitionStoreException(
+                              "Failed to parse configuration class [" + bd.getBeanClassName() + "]", ex);
+                      }
+                  }
+              
+                  this.deferredImportSelectorHandler.process();
+              }
+              ```
+            
+              - AnnotatedBeanDefinition的解析方法（parse）
+            
+                ```java
+                protected final void parse(AnnotationMetadata metadata, String beanName) throws IOException {
+                    processConfigurationClass(new ConfigurationClass(metadata, beanName), DEFAULT_EXCLUSION_FILTER);
+                }
+                
+                protected void processConfigurationClass(ConfigurationClass configClass, Predicate<String> filter) throws IOException {
+                    if (this.conditionEvaluator.shouldSkip(configClass.getMetadata(), ConfigurationPhase.PARSE_CONFIGURATION)) {//condition注解解析
+                        return;
+                    }
+                
+                    ConfigurationClass existingClass = this.configurationClasses.get(configClass);//从configurationClasses获取该配置类的ConfigurationClass
+                    if (existingClass != null) {//如果不为空则代表可能从其他地方导入了配置类
+                        if (configClass.isImported()) {//是否是import导入的配置类
+                            if (existingClass.isImported()) {
+                                existingClass.mergeImportedBy(configClass);//添加该配置类
+                            }
+                            // 否则忽略新导入的配置类；现有的非导入类会覆盖它。
+                            return;
+                        }
+                        else {
+                            // 找到显式 bean 定义，可能替换导入。
+                            // 让我们删除旧的并使用新的。
+                            this.configurationClasses.remove(configClass);//删除该configClass
+                            this.knownSuperclasses.values().removeIf(configClass::equals);//从knownSuperclasses中删除
+                        }
+                    }
+                
+                    // 递归处理配置类及其超类层次结构。
+                    SourceClass sourceClass = asSourceClass(configClass, filter);//使用SourceClass包装Bean的Class
+                    do {
+                        sourceClass = doProcessConfigurationClass(configClass, sourceClass, filter);//解析配置类（如果该配置类含有父类则会返回父类的sourceClass，没有父类则返回空）
+                    }
+                    while (sourceClass != null);
+                
+                    this.configurationClasses.put(configClass, configClass);//在配置类集合中添加该类
+                }
+                ```
+            
+                
