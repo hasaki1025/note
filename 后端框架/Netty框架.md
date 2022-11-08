@@ -132,11 +132,13 @@
   
 - ## 网络编程
 
-  - 堵塞模式创建服务器
+  - ### 单线程堵塞模式创建服务器
 
+    - 服务器
+    
     ```java
+    @Slf4j
     public class ServerIO {
-        private static final Logger log = LoggerFactory.getLogger(ServerIO.class);
     
         public static void main(String[] args) throws IOException {
             ServerSocketChannel socketChannel = ServerSocketChannel.open();
@@ -145,12 +147,12 @@
             while (true)
             {
                 log.info("waiting for connect...");
-                SocketChannel channel = socketChannel.accept();
+                SocketChannel channel = socketChannel.accept();//在这里堵塞线程
                 log.info("connect successfully");
                 channels.add(channel);
                 for (SocketChannel c : channels) {
                     ByteBuffer buffer = ByteBuffer.allocate(16);
-                    c.read(buffer);
+                    c.read(buffer);//建立链接后会在read方法堵塞
                     buffer.flip();
                     while (buffer.hasRemaining())
                     {
@@ -164,6 +166,278 @@
     }
     
     ```
-
     
-
+    - 客户端
+    
+    ```java
+    public class Client {
+        public static void main(String[] args) throws IOException {
+            SocketChannel channel = SocketChannel.open();
+            channel.connect(new InetSocketAddress("127.0.0.1",8080));
+    
+            System.out.println("waiting connect....");
+        }
+    }
+    ```
+    
+    - 这种模式的服务端无法同时服务多个客户端，而且当服务端接受到客户端发送的数据后如果客户端再次发送数据，服务端将无法接受到（会执行下一次循环监听链接）
+    
+  - ### 单线程非堵塞服务器
+  
+    - 只需要设置
+  
+      ```java
+      socketChannel.configureBlocking(false);
+      ```
+  
+      设置了非堵塞链接后accept方法将不会堵塞并且如果没有建立链接则返回值为null，read方法也同理（没有数据返回0）
+  
+  - ### selector模式服务器
+  
+    - #### 服务器
+  
+      ```java
+      @Slf4j
+      public class SelectorServer {
+          public static void main(String[] args) throws IOException {
+              //创建selector用于管理channel
+              Selector selector = Selector.open();
+              //创建SocketChannel,设置缓冲区，设置非堵塞
+              ServerSocketChannel server = ServerSocketChannel.open();
+              ByteBuffer buffer = ByteBuffer.allocate(16);
+              server.configureBlocking(false);
+              //ServerSocketChannel向selector注册,并获取selectionkey
+              SelectionKey selectionKey = server.register(selector, 0, null);
+              //绑定accept事件
+              selectionKey.interestOps(SelectionKey.OP_ACCEPT);
+              server.bind(new InetSocketAddress(8080));
+              while (true)
+              {
+                  //调用select方法监听事件发生,堵塞运行
+                  log.info("selector waiting....");
+                  selector.select();
+                  log.info("selector get Event");
+                  //发生事件，获取事件对应的selectionkey
+                  Set<SelectionKey> keys = selector.selectedKeys();
+                  log.info("keys size {}",keys.size());
+                  Iterator<SelectionKey> keyIterator = keys.iterator();
+                  while (keyIterator.hasNext())
+                  {
+                      SelectionKey key = keyIterator.next();
+                      log.info("Event Type:{}",key.interestOps());
+                      //根据事件类型进行不同的处理
+                     if(key.interestOps()==SelectionKey.OP_ACCEPT)
+                     {
+                         try{
+                             //连接类型获取信道
+                             ServerSocketChannel channel = (ServerSocketChannel) key.channel();
+                             log.info("{} Accept...",channel);
+                             //监听
+                             SocketChannel socketChannel = channel.accept();
+                             //如果连接建立失败则取消执行该任务
+                             if (socketChannel==null)
+                             {
+                                 key.cancel();
+                             }
+                             else {
+                                 //设置监听后获取的连接的堵塞类型
+                                 socketChannel.configureBlocking(false);
+                                 //注册到selector中
+                                 socketChannel.register(selector,SelectionKey.OP_READ,null);
+                             }
+                         }catch (Exception e)
+                         {
+                             e.printStackTrace();
+                             //发生异常则取消执行
+                             key.cancel();
+                         }
+                     }
+                     else if (key.interestOps()==SelectionKey.OP_READ){
+                          try
+                          {
+                              SocketChannel channel = (SocketChannel) key.channel();
+                              int read = channel.read(buffer);
+                              //如果没有数据可读则取消执行
+                              if (read==-1)
+                              {
+                                  key.cancel();
+                              }
+                              else {
+                                  buffer.flip();
+                                  String s = BufferUtil.bufferToString(buffer);
+                                  log.info("get message {} from {}",s,channel);
+                              }
+                          }catch (IOException e)
+                          {
+                              e.printStackTrace();
+                              key.cancel();
+                          }
+                     }
+                     //每次解决之后删除本次活跃的事件
+                      keyIterator.remove();
+                  }
+              }
+          }
+      }
+      
+      ```
+  
+    - #### 客户端
+  
+      ```java
+      public class Client {
+          public static void main(String[] args) throws IOException {
+              SocketChannel channel = SocketChannel.open();
+              ByteBuffer buffer = ByteBuffer.allocate(16);
+              try (FileChannel fileChannel = new FileInputStream("src/main/resources/123.txt").getChannel()) {
+                  int read = fileChannel.read(buffer);
+                  System.out.println("waiting connect....");
+                  if (channel.connect(new InetSocketAddress("127.0.0.1",8080))) {
+                      System.out.println("connect successfully");
+                      buffer.flip();
+                      channel.write(buffer);
+                  }
+              }catch (Exception e)
+              {
+                  e.printStackTrace();
+              }
+          }
+      }
+      
+      ```
+  
+    - #### 常用方法
+  
+      - cancel方法（selectionkey）
+  
+        ```java
+        key.cancel();
+        ```
+  
+        如果发生了事件但是不处理则下次selector仍然会将该连接视为活跃连接（不在select堵塞），如果不打算处理该selectKey对应的事件应该使用cancel方法
+  
+    - #### selectedKeys集合元素手动删除
+  
+      - 在selector的selectedKeys返回的集合中不会主动删除key只会增加key，如果当key建立连接的channel执行玩任务后再次发生事件则会再次进入到建立连接的代码块中，者可能会产生异常，所以需要手动删除已经执行过的key
+  
+    - #### 异常处理
+  
+      - 如果不行进行异常处理则如果客户端的正常关闭和异常关闭都会导致服务端异常从而导致服务端程序停止
+  
+    - #### 消息边界问题
+  
+      - 目前的消息处理 
+  
+        ```java
+        
+        try
+        {
+            SocketChannel channel = (SocketChannel) key.channel();
+            int read = channel.read(buffer);
+            //如果没有数据可读则取消执行
+            if (read==-1)
+            {
+                key.cancel();
+            }
+            else {
+                buffer.flip();
+                String s = BufferUtil.bufferToString(buffer);
+                log.info("get message {} from {}",s,channel);
+            }
+        }catch (IOException e)
+        {
+            e.printStackTrace();
+            key.cancel();
+        }
+        
+        //处理Buffer的代码
+        public static String bufferToString(ByteBuffer buffer)
+        {
+            StringBuilder stringBuffer = new StringBuilder();
+            while (buffer.hasRemaining())
+            {
+                stringBuffer.append((char) buffer.get());
+            }
+            buffer.clear();
+            return stringBuffer.toString();
+        }
+        ```
+  
+        - 问题一：如果数据一次读取不能完全读取可能会导致中文乱码问题，而且在消息长度不确定的情况下可能会出现半包和黏包的现象
+        - 问题二：buffer如果为局部变量则出现半包现象会导致消息的丢失，如果buffer为全局变量对于多个Channel并不友好
+  
+      - ##### 问题一：解决方法
+  
+        - 固定最大消息长度
+          - 缺点：浪费空间
+        - 分割符分割方法
+          - 缺点：效率低
+  
+        - TLV方式
+          - 固定长度的字段用于指示后续消息长度，TLV主要是，类型，长度，数据
+  
+      - ##### 问题二：解决方法
+  
+        - 附件
+          - 在selector注册时第三个参数可以作为附件与每个key相关联
+  
+      - ##### 改进
+  
+        - 读取Key注册
+  
+          ```java
+          //创建附件
+          ByteBuffer buffer = ByteBuffer.allocate(4);
+          //设置监听后获取的连接的堵塞类型
+          socketChannel.configureBlocking(false);
+          //注册到selector中
+          socketChannel.register(selector,SelectionKey.OP_READ,buffer);
+          ```
+  
+        - 获取buffer
+  
+          ```java
+          ByteBuffer buffer = (ByteBuffer) key.attachment();
+          ```
+  
+        - 消息获取
+  
+          ```java
+          public static String getMessgaeFromKey(SelectionKey key) throws IOException {
+              SocketChannel channel = (SocketChannel) key.channel();
+              ByteBuffer buffer = (ByteBuffer) key.attachment();
+              int read = channel.read(buffer);
+              if (read==-1)//无消息刻度
+              {
+                  key.cancel();
+                  return "";
+              }
+              buffer.flip();
+              StringBuilder s=new StringBuilder();
+              while (buffer.hasRemaining())//读取并查看是否有\n
+              {
+                  char c = (char) buffer.get();
+                  s.append(c);
+                  if (c=='\n')
+                  {
+                      break;
+                  }
+              }
+          
+              if(s.toString().contains("\n"))//如果有\n代表已经读取了一条完整的消息
+              {
+                  buffer.compact();
+              }
+              else if (buffer.limit()==buffer.capacity())//没有\n且容量不足需要扩容
+              {
+                  ByteBuffer allocate = ByteBuffer.allocate(buffer.capacity() * 2);
+                  allocate.put(StandardCharsets.UTF_8.encode(s.toString()));
+                  key.attach(allocate);
+              }
+              return s.toString().endsWith("\n") ?  s.toString() : "";//返回获取的第一条消息（如果有\n则代表已经获取到了没有则代表还没读取完成）
+          }
+          ```
+          
+          
+          
+          
