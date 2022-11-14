@@ -1142,4 +1142,621 @@
             ```
         
             - shutdownGracefully方法会结束掉客户端所有进程（正常结束）
+    
+  - ### Future和promise
+  
+    - Future
+  
+      - 继承于JDK中的Future
+      - JDK Future只能同步等待结果，Netty Future可以同步或者异步获取结果
+  
+    - promise
+  
+      - promise继承于Netty Future
+      - 含有Netty Future中的功能且脱离任务存在，作为两个线程之间结果传递的容器
+  
+    - 主要方法
+  
+    - | 功能/名称    | jdk Future                     | netty Future                                                 | Promise      |
+      | ------------ | ------------------------------ | ------------------------------------------------------------ | ------------ |
+      | cancel       | 取消任务                       | -                                                            | -            |
+      | isCanceled   | 任务是否取消                   | -                                                            | -            |
+      | isDone       | 任务是否完成，不能区分成功失败 | -                                                            | -            |
+      | get          | 获取任务结果，阻塞等待         | -                                                            | -            |
+      | getNow       | -                              | 获取任务结果，非阻塞，还未产生结果时返回 null                | -            |
+      | await        | -                              | 等待任务结束，如果任务失败，不会抛异常，而是通过 isSuccess 判断 | -            |
+      | sync         | -                              | 等待任务结束，如果任务失败，抛出异常                         | -            |
+      | isSuccess    | -                              | 判断任务是否成功                                             | -            |
+      | cause        | -                              | 获取失败信息，非阻塞，如果没有失败，返回null                 | -            |
+      | addLinstener | -                              | 添加回调，异步接收结果                                       | -            |
+      | setSuccess   | -                              | -                                                            | 设置成功结果 |
+      | setFailure   | -                              | -                                                            | 设置失败结果 |
+  
+    - JDK Future简单使用
+  
+      ```java
+      public class JDKFuture {
+          public static void main(String[] args) throws ExecutionException, InterruptedException {
+              ThreadPoolExecutor pool = new ThreadPoolExecutor(
+                  12, 24, 60, TimeUnit.SECONDS, new LinkedBlockingDeque<>(), new ThreadPoolExecutor.AbortPolicy()
+              );
+              Future<Integer> future = pool.submit(new Callable<Integer>() {
+                  @Override
+                  public Integer call() throws Exception {
+                      sleep(1000);
+                      return 50;
+                  }
+              });
+              System.out.println(future.get());
+          }
+      
+      }
+      ```
+  
+    - NettyFuture简单使用
+  
+      ```java
+      @Slf4j
+      public class NettyFutrue {
+          public static void main(String[] args) throws ExecutionException, InterruptedException {
+              NioEventLoopGroup group = new NioEventLoopGroup();
+              EventLoop eventLoop = group.next();
+              Future<Integer> future = eventLoop.submit(new Callable<Integer>() {
+                  @Override
+                  public Integer call() throws Exception {
+                      log.info("执行计算.....");
+                      return 50;
+                  }
+              });
+              log.info("wait for result....");
+              //可以采用getNow方法，但是该方法是非堵塞的，如果Future没有返回值则getNow方法会返回null
+              log.info("get result {}",future.get());
+      		//异步方式既是调用addlistioner方法
+          }
+      }
+      
+      ```
+  
+    - Promise简单使用
+  
+      ```java
+      @Slf4j
+      public class NettyPromise {
+      
+          public static void main(String[] args) throws ExecutionException, InterruptedException {
+              EventLoop eventLoop = new NioEventLoopGroup().next();
+              DefaultPromise<Integer> promise = new DefaultPromise<>(eventLoop);
+              new Thread(){
+                  @Override
+                  public void run() {
+                      log.info("执行计算....");
+                      try {
+                         // int a=1/0;
+                          sleep(1000);
+                          promise.setSuccess(100);
+                      } catch (InterruptedException e) {
+                          //计算失败则设置错误结果（将异常作为参数传入）
+                          promise.setFailure(e);
+                          throw new RuntimeException(e);
+                      }
+      
+                  }
+      
+              }.start();
+      
+              log.info("wait for result....");
+              log.info("get result {}",promise.get());
+          }
+      
+      }
+      
+      ```
+  
+      - promise相当于线程之间的共享内存
+    
+  - ### Handler和PipeLine
+  
+    - pipeline
+  
+      - 通过Channel获取Pipeline
+  
+      - addlast方法
+  
+        - 将一个handler添加在head处理器之后，tail之前
+  
+      - 执行顺序
+  
+        - inboundHandler从head向tail
+        - outboundHandler从tail向head
+  
+      - handler执行链源码
+  
+        - 在ChannelInboundHandlerAdapter类中原始channelRead方法
+  
+        ```java
+        @Skip
+        @Override
+        public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+            ctx.fireChannelRead(msg);
+        }
+        ```
+  
+      - OutBoundHandler执行问题
+  
+        ```java
+        @Override
+        protected void initChannel(NioSocketChannel ch) throws Exception {
+            ch.pipeline().addLast(new StringDecoder());
+            ch.pipeline().addLast(new ChannelInboundHandlerAdapter(){
+                @Override
+                public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+                    log.info("get message {}",msg);
+                    log.info("this inboundhandler....");
+                    //ctx.writeAndFlush("echo: "+msg);
+                    ch.writeAndFlush("echo: "+msg);
+                    super.channelRead(ctx, msg);
+                }
+            });
+            ch.pipeline().addLast(new ChannelOutboundHandlerAdapter(){
+                @Override
+                public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
+                    log.info("this outboundhandler.....");
+                }
+            });
+        }
+        ```
+  
+        - 如果最终pipeline的handler链为 head -> inhandler -> outhandler->tail
+          - ChannelHandlerContext的writeAndFlush方法将从当前handler（inhandler向前查找outhandler类型的handler）
+          - Channel的writeAndFlush方法将会从tail向前查找
+  
+      - 调试专用Channel（EmbeddedChannel）
+  
+        ```java
+        @Slf4j
+        public class TestEmbeddedChannel {
+        
+            public static void main(String[] args) {
+                ChannelInboundHandlerAdapter h1 = new ChannelInboundHandlerAdapter() {
+                    @Override
+                    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+                        log.info("read.......");
+                        super.channelRead(ctx, msg);
+                    }
+                };
+        
+        
+                ChannelOutboundHandlerAdapter h2 = new ChannelOutboundHandlerAdapter() {
+                    @Override
+                    public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
+                        log.info("write......");
+                        super.write(ctx, msg, promise);
+                    }
+                };
+        
+                EmbeddedChannel channel = new EmbeddedChannel(h1, h2);
+                channel.writeInbound(StandardCharsets.UTF_8.encode("hello"));//模拟外部传入数据
+                channel.writeOutbound(StandardCharsets.UTF_8.encode("hi"));//模拟内部向外写出数据
+            }
+        }
+        
+        ```
+  
+  - #### ByteBuf
+  
+    - 创建
+  
+      ````java
+      //不指定初始容量
+              ByteBuf buf = ByteBufAllocator.DEFAULT.buffer();
+              //指定初始容量
+              ByteBuf byteBuf = ByteBufAllocator.DEFAULT.buffer(256);
+      ````
+  
+      ByteBuf可以自动扩容
+  
+      - 扩容规则
+  
+        如果写入大小<512，则选择下一个为16的倍数
+  
+        如果>512，则选择下一个2^n
+  
+    - 堆内存创建和直接内存创建
+  
+      ```java
+      //不指定初始容量，默认初始为256
+      ByteBuf buf = ByteBufAllocator.DEFAULT.buffer();
+      //指定初始容量
+      ByteBuf byteBuf = ByteBufAllocator.DEFAULT.buffer(256);
+      //指定最大容量和初始容量，最大容量不指定默认是int最大值
+      ByteBuf buffer = ByteBufAllocator.DEFAULT.buffer(256, 1000);
+      ```
+  
+    - 池化Buffer
+  
+      ```shell
+      #参数添加，默认为开启池化
+      -Dio.netty.allocator.type={unpooled | pooled}
+      ```
+  
+    - 无需切换读写模式，由两个指针标记读写
+  
+    - 重要方法
+  
+      方法列表，省略一些不重要的方法
+  
+      | 方法签名                                                     | 含义                   | 备注                                                  |
+      | ------------------------------------------------------------ | ---------------------- | ----------------------------------------------------- |
+      | writeBoolean(boolean value)                                  | 写入 boolean 值        | 用一字节 01\|00 代表 true\|false                      |
+      | writeByte(int value)                                         | 写入 byte 值           |                                                       |
+      | writeShort(int value)                                        | 写入 short 值          |                                                       |
+      | writeInt(int value)                                          | 写入 int 值            | Big Endian，即 0x250，写入后 00 00 02 50,大端写入     |
+      | writeIntLE(int value)                                        | 写入 int 值            | Little Endian，即 0x250，写入后 50 02 00 00，小端写入 |
+      | writeLong(long value)                                        | 写入 long 值           |                                                       |
+      | writeChar(int value)                                         | 写入 char 值           |                                                       |
+      | writeFloat(float value)                                      | 写入 float 值          |                                                       |
+      | writeDouble(double value)                                    | 写入 double 值         |                                                       |
+      | writeBytes(ByteBuf src)                                      | 写入 netty 的 ByteBuf  |                                                       |
+      | writeBytes(byte[] src)                                       | 写入 byte[]            |                                                       |
+      | writeBytes(ByteBuffer src)                                   | 写入 nio 的 ByteBuffer |                                                       |
+      | int writeCharSequence(CharSequence sequence, Charset charset) | 写入字符串             |                                                       |
+  
+    - 读取方式
+  
+      读取后的空间为废弃空间，可以通过resetReaderInder方法还原到上次的读取指针，或者通过get方法获取，该方法不会影响读取指针
+  
+    - 内存回收
+  
+      内存回收主要依靠引用计数方法，每个缓冲区初始计数值为1，调用release方法计数加一，调用retain方法，这些方法来自于ByteBuf实现的ReferenceCounted接口
+  
+      一般依靠headhandler或者tailHandler释放缓冲区，但是最好在自定义的handler中处理缓冲区，由最后一个使用缓冲区的handler处理缓冲区 
+  
+      - tailHandler(TailContext类)源码
+  
+        ```java
+        @Override
+        public void channelRead(ChannelHandlerContext ctx, Object msg) {
+            onUnhandledInboundMessage(ctx, msg);
+        }
+        //onUnhandledInboundMessage方法
+        protected void onUnhandledInboundMessage(ChannelHandlerContext ctx, Object msg) {
+            onUnhandledInboundMessage(msg);
+            if (logger.isDebugEnabled()) {
+                logger.debug("Discarded message pipeline : {}. Channel : {}.",
+                             ctx.pipeline().names(), ctx.channel());
+            }
+        }
+        //onUnhandledInboundMessage方法
+        protected void onUnhandledInboundMessage(Object msg) {
+            try {
+                logger.debug(
+                    "Discarded inbound message {} that reached at the tail of the pipeline. " +
+                    "Please check your pipeline configuration.", msg);
+            } finally {
+                ReferenceCountUtil.release(msg);
+            }
+        }
+        //release方法
+        public static boolean release(Object msg) {
+            if (msg instanceof ReferenceCounted) {
+                return ((ReferenceCounted) msg).release();
+            }
+            return false;
+        }
+        ```
+  
+      - headHandler源码（HeadContext）
+  
+        ```java
+        @Override
+        public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+            unsafe.write(msg, promise);
+        }
+        //write是抽象方法，在AbstractChannel的实现中调用了ReferenceCountUtil.release(msg);
+        ```
+  
+    - slice方法
+  
+      - 对原始的Buffer进行切片，切片后的Buffer并不需要复制而是使用了源Buffer的内存
+  
+      ```java
+      @Slf4j
+      public class Slient {
+          public static void main(String[] args) {
+              ByteBuf buffer = ByteBufAllocator.DEFAULT.buffer();
+              buffer.writeCharSequence("abcdefghijklmn", StandardCharsets.UTF_8);
+              log.info("buffer before slice buffer {}",buffer.toString(StandardCharsets.UTF_8));
+              ByteBuf buf = buffer.slice(4, 4);
+              log.info("buffer after slice buffer {}",buf.toString(StandardCharsets.UTF_8));
+              buf.setByte(1,100);//当切片后的buffer中内容改变后原先的buffer中的内容也已经改变
+              log.info("buffer after change {}",buffer.toString(StandardCharsets.UTF_8));
+          }
+      
+      
+      ```
+  
+      - 但是被切片分出的buffer之后不能再次写入内容（容量固定），同时如果原先的buffer调用realse方法后切片后的buffer无法使用
+      
+    - composite方法
+    
+      - 将两个缓冲区合再一起，但是并没有复制操作，存储地址不会改变
+    
+      ```java
+      public class CompositeTest {
+          public static void main(String[] args) {
+              ByteBuf b1 = ByteBufAllocator.DEFAULT.buffer();
+              b1.writeCharSequence("hello,", StandardCharsets.UTF_8);
+              ByteBuf b2 = ByteBufAllocator.DEFAULT.buffer();
+              b2.writeCharSequence("netty",StandardCharsets.UTF_8);
+              CompositeByteBuf components = ByteBufAllocator.DEFAULT.compositeDirectBuffer();
+              //第一个参数为是否添加写入指针（从添加了Components之后的末端作为写入指针的位置），对于缓冲区而言可读区域是从读取指针开始到写入指针为止，如果第一个参数为false（默认为false），则写入指针为0，调用ToString方法将无法输出值
+              CompositeByteBuf byteBufs = components.addComponents(true,b1, b2);
+              System.out.println(byteBufs.toString());
+          }
+      }
+      
+      ```
+    
+    - Unpooled工具类
+    
+      - 底层采用CompositeByteBuf，可以包装多个非池化缓冲区
+    
+      这里仅介绍其跟【零拷贝】相关的 wrappedBuffer 方法，可以用来包装 ByteBuf
+    
+      ```java
+      ByteBuf buf1 = ByteBufAllocator.DEFAULT.buffer(5);
+      buf1.writeBytes(new byte[]{1, 2, 3, 4, 5});
+      ByteBuf buf2 = ByteBufAllocator.DEFAULT.buffer(5);
+      buf2.writeBytes(new byte[]{6, 7, 8, 9, 10});
+      
+      // 当包装 ByteBuf 个数超过一个时, 底层使用了 CompositeByteBuf
+      ByteBuf buf3 = Unpooled.wrappedBuffer(buf1, buf2);
+      System.out.println(ByteBufUtil.prettyHexDump(buf3));
+      ```
+    
+      输出
+    
+      ```
+               +-------------------------------------------------+
+               |  0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f |
+      +--------+-------------------------------------------------+----------------+
+      |00000000| 01 02 03 04 05 06 07 08 09 0a                   |..........      |
+      +--------+-------------------------------------------------+----------------+
+      ```
+    
+      也可以用来包装普通字节数组，底层也不会有拷贝操作
+    
+      ```java
+      ByteBuf buf4 = Unpooled.wrappedBuffer(new byte[]{1, 2, 3}, new byte[]{4, 5, 6});
+      System.out.println(buf4.getClass());
+      System.out.println(ByteBufUtil.prettyHexDump(buf4));
+      ```
+    
+      输出
+    
+      ```
+      class io.netty.buffer.CompositeByteBuf
+               +-------------------------------------------------+
+               |  0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f |
+      +--------+-------------------------------------------------+----------------+
+      |00000000| 01 02 03 04 05 06                               |......          |
+      +--------+-------------------------------------------------+----------------+
+      ```
+    
 
+- ## Netty进阶
+
+  - ### 黏包和半包
+
+    - 黏包案例
+
+      ```java
+      public static void main(String[] args) throws InterruptedException {
+          Channel channel = new Bootstrap()
+              .group(new NioEventLoopGroup())
+              .channel(NioSocketChannel.class)
+              .handler(new ChannelInitializer<NioSocketChannel>() {
+                  @Override
+                  protected void initChannel(NioSocketChannel ch) throws Exception {
+                      ch.pipeline().addLast(new ChannelInboundHandlerAdapter(){
+                          //连接建立完成后触发
+                          @Override
+                          public void channelActive(ChannelHandlerContext ctx) throws Exception {
+                              for (int i = 0; i < 10; i++) {
+                                  ByteBuf buffer = ByteBufAllocator.DEFAULT.buffer(16);
+                                  buffer.writeBytes(new byte[]{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16});
+                                  ctx.writeAndFlush(buffer);
+                              }
+                          }
+                      });
+                  }
+              }).connect("127.0.0.1",8080).sync().channel();
+      }
+      ```
+
+      - 最终服务端却是一次接受到160个字节
+
+      - 如果使用以下代码可以复现半包现象(option方法)
+
+        ```java
+        Channel channel = new Bootstrap()
+                        .group(new NioEventLoopGroup())
+                        .channel(NioSocketChannel.class)
+                        .option(ChannelOption.SO_RCVBUF,10)	
+        ```
+
+      - 黏包解决方法（一）：短连接（不推荐）
+
+        ```java
+        客户端
+            @Slf4j
+            public class SolveClient {
+                public static void main(String[] args) {
+                    for (int i = 0; i < 6; i++) {
+                        send();
+                    }
+                    log.info("send ending....");
+                }
+        
+                private static void send() {
+                    NioEventLoopGroup group = new NioEventLoopGroup();
+                    try {
+                        Channel channel = new Bootstrap()
+                            .group(group)
+                            .channel(NioSocketChannel.class)
+                            .handler(new ChannelInitializer<NioSocketChannel>() {
+                                @Override
+                                protected void initChannel(NioSocketChannel ch) throws Exception {
+                                    ch.pipeline().addLast(new ChannelInboundHandlerAdapter(){
+                                        //连接建立完成后触发
+                                        @Override
+                                        public void channelActive(ChannelHandlerContext ctx) throws Exception {
+        
+                                            ByteBuf buffer = ByteBufAllocator.DEFAULT.buffer(16);
+                                            buffer.writeBytes(new byte[]{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16});
+                                            ctx.writeAndFlush(buffer);
+                                            ctx.channel().close();
+                                        }
+                                    });
+                                }
+                            }).connect("127.0.0.1",8080).sync().channel();
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                    finally {
+                        group.shutdownGracefully();
+                    }
+                }
+        
+        
+            }
+        
+        ```
+        
+      - 黏包解决方式（二）：设置服务器缓冲区大小为固定大小
+      
+        ```java
+        new ServerBootstrap()
+            .group(new NioEventLoopGroup())
+            .channel(NioServerSocketChannel.class)
+            //设置服务器缓冲区大小，三个参数分别为最小值，初始值，最大值
+            .childOption(ChannelOption.RCVBUF_ALLOCATOR,new AdaptiveRecvByteBufAllocator(16,16,16))
+        ```
+      
+        - 但是这种方式会产生半包
+        
+      - 黏包半包解决方法（三）FixedLengthFrameDecoder类
+      
+        - 固定长度数据包解决
+      
+          ```java
+          @Slf4j
+          public class FrameDecoderTestServer {
+              public static void main(String[] args) {
+                  new ServerBootstrap()
+                      .group(new NioEventLoopGroup(1),new NioEventLoopGroup())
+                      .channel(NioServerSocketChannel.class)
+                      .childHandler(new ChannelInitializer<NioSocketChannel>() {
+                          @Override
+                          protected void initChannel(NioSocketChannel ch) throws Exception {
+                              ch.pipeline().addLast(new LoggingHandler(LogLevel.INFO));
+                              //指定消息长度为3
+                              ch.pipeline().addLast(new FixedLengthFrameDecoder(3));
+                              ch.pipeline().addLast(new ChannelInboundHandlerAdapter(){
+                                  @Override
+                                  public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+                                      ByteBuf buf = (ByteBuf) msg;
+                                      byte[] bytes = buf.toString(StandardCharsets.UTF_8).getBytes(StandardCharsets.UTF_8);
+                                      log.info("get message {}",bytes);2 
+                                  }
+                              });
+                          }
+                      }).bind(8080);
+              }
+          }
+          
+          ```
+      
+          - 通过固定消息长度来截取数据，如果当前消息长度大于最长长度则会截取并保存多余的部分，如果消息长度小于指定消息长度同样会保存等待下一次发送
+          - 被截取后的消息发送给下一个handler处理器，所以logginghandler如果在FixedLengthFrameDecoder之前则loggingHandler能够获取完整的消息
+      
+        - 黏包半包解决方案（四）分割符
+      
+          - LineBasedFrameDecoder采用的是分割符解决,本身支持\r或者\n作为换行符
+      
+            ```java
+            public class LineBasedFrameDecoderTestServer {
+                public static void main(String[] args) {
+                    new ServerBootstrap()
+                        .group(new NioEventLoopGroup(1),new NioEventLoopGroup())
+                        .channel(NioServerSocketChannel.class)
+                        .childHandler(new ChannelInitializer<NioSocketChannel>() {
+                            @Override
+                            protected void initChannel(NioSocketChannel ch) throws Exception {
+                                ChannelPipeline pipeline = ch.pipeline();
+                                //创建LineBasedFrameDecoder需要指定消息最大长度，一旦超过这个长度时还没有找到换行符则抛出异常
+                                pipeline.addLast(new LineBasedFrameDecoder(10));
+                                pipeline.addLast(new LoggingHandler(LogLevel.INFO));
+                            }
+                        }).bind(8080);
+                }
+            }
+            ```
+      
+          - 除了LineBasedFrameDecoder之外还可以使用DelimiterBasedFrameDecoder自定义分割符
+      
+            ```java
+            public class LineBasedFrameDecoderTestServer {
+                public static void main(String[] args) {
+                    new ServerBootstrap()
+                        .group(new NioEventLoopGroup(1),new NioEventLoopGroup())
+                        .channel(NioServerSocketChannel.class)
+                        .childHandler(new ChannelInitializer<NioSocketChannel>() {
+                            @Override
+                            protected void initChannel(NioSocketChannel ch) throws Exception {
+                                ChannelPipeline pipeline = ch.pipeline();
+                                //创建LineBasedFrameDecoder需要指定消息最大长度，一旦超过这个长度时还没有找到换行符则抛出异常
+                                //pipeline.addLast(new LineBasedFrameDecoder(10));
+                                ByteBuf buffer = ByteBufAllocator.DEFAULT.buffer();
+                                buffer.writeBytes("$".getBytes(StandardCharsets.UTF_8));
+                                pipeline.addLast(new DelimiterBasedFrameDecoder(10,buffer));
+                                pipeline.addLast(new LoggingHandler(LogLevel.INFO));
+                            }
+                        }).bind(8080);
+                }
+            }
+            
+            ```
+      
+        - 黏包半包解决方法（五）基于长度字段的解码器
+      
+          - LengthFieldBasedFrameDecoder
+      
+            - 构造方法
+      
+              ```java
+              
+              public LengthFieldBasedFrameDecoder(
+                  int maxFrameLength, //消息最长长度
+                  int lengthFieldOffset //指定消息长度字段的偏移量（也就是该消息的长度指定字段从哪开始读）
+                  , int lengthFieldLength) //指定消息长度字段的长度
+              
+              public LengthFieldBasedFrameDecoder(
+                  int maxFrameLength//同上
+                  , int lengthFieldOffset//同上
+                  , int lengthFieldLength//同上
+                  ,int lengthAdjustment//长度域的偏移量矫正。 如果长度域的值，除了包含有效数据域的长度外，还包含了其他域（如长度域自身）长度，那么，就需要进行矫正。矫正的值为：包长 - 长度域的值 – 长度域偏移 – 长度域长。
+                  , int initialBytesToStrip//该消息头部需要剥离的字节数
+                  , boolean failFast) {//如果为true，当length字段指定的长度超过maxFrameLength时抛出异常，如果为false则当整个消息长度超过maxFrameLength时抛出异常
+              ```
+      
+          - 使用
+      
+            - 假设消息格式如下
+      
+            ```java
+            总长度<=32
+            头（4bit）-length字段（4bit）-序号（4bit）-消息正文（？）
+            ```
+      
+            - 
