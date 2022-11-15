@@ -1777,8 +1777,227 @@
       - 创建解码器和编码器的集合（ByteToMessageCodec<Message>类，将Byte转换为其泛型）
   
         ```java
-        ```
-  
+        @Slf4j
+        public class MessageCodec extends ByteToMessageCodec<Message> {
         
-  
+        
+            @Override
+            public void encode(ChannelHandlerContext ctx, Message message, ByteBuf buf) throws Exception {
+                //写入魔数(4字节)
+                buf.writeBytes(new byte[]{1,0,2,6});
+                //写入版本号（2字节）
+                buf.writeByte(1);
+                buf.writeByte(0);
+                //写入序列化算法指定(1字节)
+                buf.writeByte(SerializableMethodName.JDK.getValue());
+                //指令类型（1字节）
+                buf.writeByte(message.getMessageType());
+                //请求序号(4)
+                buf.writeInt(1);
+                ByteArrayOutputStream os = new ByteArrayOutputStream();
+                ObjectOutputStream oos = new ObjectOutputStream(os);
+                oos.writeObject(message);
+                byte[] bytes = os.toByteArray();
+                //正文长度(4)
+                buf.writeInt(bytes.length);
+                //消息本体(前面共16)
+                //样式：
+                // 01 00 02 06
+                // 01 00
+                // 00
+                // 00
+                // 00 00 00 01
+                // 00 00 00 e6
+                buf.writeBytes(bytes);
+            }
+        
+            @Override
+            public void decode(ChannelHandlerContext ctx, ByteBuf buf, List<Object> list) throws Exception {
+                //魔数
+                int mn = buf.readInt();
+                log.debug("magic number :{}",mn);
+                //版本
+                byte version = buf.readByte();
+                buf.readByte();
+                log.debug("version number :{}",version);
+                //序列化算法指定
+                byte serName = buf.readByte();
+                log.debug("serName  :{}",serName);
+                //指令类型
+                byte msgType = buf.readByte();
+                log.debug("msgType  :{}",msgType);
+                //请求序号
+                int seq = buf.readInt();
+                log.debug("seq  :{}",seq);
+                //正文长度
+                int len = buf.readInt();
+                log.debug("len  :{}",len);
+                //正文
+                byte[] msg = new byte[len];
+                buf.readBytes(msg);
+                if (serName== SerializableMethodName.JDK.getValue()) {
+                    Message message = new SerializeUtil<Message>().JDKSerial(msg);
+                    log.info("Message : {}",message);
+                    list.add(message);
+                }
+                else {
+                    Message message = new SerializeUtil<Message>().JSON(msg);
+                    log.info("Message : {}",message);
+                    list.add(message);
+                }
+            }
+        }
+        ```
+        
+        - 在该解码器之前还需要配置LengthFieldBasedFrameDecoder解决半包和黏包问题
+        
+          ```java
+          //魔数（4）-版本号（2）-序列化算法（1）-指令类型（1）-请求序号(4)-正文长度(4)-消息本体
+          EmbeddedChannel channel = new EmbeddedChannel(
+              new LoggingHandler(LogLevel.DEBUG),
+              new LengthFieldBasedFrameDecoder(1024,12,4,0,0),
+              new MessageCodec());
+          ```
+      
+    - @sharable注解
     
+      - 如果将信道中的handler抽取成为一个变量为多个信道使用，可能会产生多线程并发问题，如解决半包和黏包问题的LengthFieldBasedFrameDecoder在上次请求中发现了半包就会将内容保存直到下次请求，但是如果此时多线程调用了LengthFieldBasedFrameDecoder可能会导致上次的内容受损。
+        - Netty中可以直接多线程环境下使用的Handler都添加了sharable注解标记，如果logginHandler类上标注了sharable，如ByteToMessageCodec类不允许子类上标注sharable注解（在构造方法上检查了是否含有sharable注解），如果需要sharable注解标记可以使用MessageToMessageCodec(该类的使用基本和ByteToMessageCodec类似)
+    
+  
+- ## Netty优化
+
+  - ### 参数优化
+
+    - 连接时间优化（CONNECT_TIMEOUT_MILLIS）单位为毫秒
+
+      - 主要作用于客户端
+      
+      - 属于SocketChannel的参数
+
+      - 当客户端建立连接时如果超过该时长还没有建立连接则会抛出timeout异常
+
+      - 与SO_TIMEOUT的区别
+
+        - 主要作用于阻塞IO中，用于指定accept方法或者read方法等的等待时间，对于Netty的非堵塞方法不管用
+      
+      - 使用
+      
+        - 客户端使用
+      
+        ```java
+        new Bootstrap()
+            .group(new NioEventLoopGroup())
+            .option(ChannelOption.CONNECT_TIMEOUT_MILLIS,2000)
+            .channel(NioSocketChannel.class)
+            .handler(new ChannelInitializer<NioSocketChannel>() {
+                @Override
+                protected void initChannel(NioSocketChannel ch) throws Exception {
+        
+                }
+            }).connect("127.0.0.1",8080).sync().channel();
+        ```
+      
+        - 服务端使用
+      
+          ```java
+          
+          new ServerBootstrap()
+              .group(new NioEventLoopGroup())
+              .channel(NioServerSocketChannel.class)
+              //给ServerSocketChannel配置参数
+              // .option()
+              //给SocketChannel配置参数
+              .childOption(ChannelOption.CONNECT_TIMEOUT_MILLIS,2000);
+          ```
+          
+        
+      - 源码
+      
+        - 在底层（AbstractNioChannel类）采用定时任务检查连接是否超过指定时间
+      
+    - SO_BACKLOG(属于ServerSocketChannel)
+    
+      - Socket连接流程图
+    
+        ![img](Netty框架.assets/v2-e21cdf919369e042376c3dda64220c15_720w.webp)
+    
+        - 如果同时有多个连接建立，这些连接会先进入全连接队列中，等待ServerSocket调用accept方法的调取（调取后该连接会从队列中删除）
+    
+        - 在Linux2.2之前，backlog大小包括了两个队列的大小，在2.2之后分别使用以下参数来控制大小
+    
+          - 半连接队列大小
+    
+            - /proc/sys/net/ipv4/tcp_max_syn_backlog指定，在syncookies启用的情况下，逻辑上没有最大值限制，这个设置被忽略
+    
+          - 全连接大小
+    
+            - 通过/proc/sys/net/core/somaxconn指定，在使用listen方法时内核会根据传入的backlog参数和系统参数做比较取二者的小值
+            - 如果全连接队列满了则server将抛出一个拒绝连接的错误到client
+    
+            ![image-20221115105257301](Netty框架.assets/image-20221115105257301.png)
+    
+          - 所以在程序中需要设置backlog参数同时在linux配置文件中也需要设置backlog大小
+    
+        - 参数使用
+    
+          ```java
+          new ServerBootstrap()
+              .group(new NioEventLoopGroup())
+              .channel(NioServerSocketChannel.class)
+              //给ServerSocketChannel配置参数
+              // .option()
+              //给SocketChannel配置参数
+              .option(ChannelOption.SO_BACKLOG,1000);
+          ```
+    
+          - 在ServerSocket中使用bind方法时可以传入backlog参数
+    
+        - 参数默认值源码查看
+    
+          - backlog参数在bind方法中调用所以找到bind方法的调用位置
+    
+            ```java
+            
+            //在ServerSocketChannel中
+            @SuppressJava6Requirement(reason = "Usage guarded by java version check")
+            @Override
+            protected void doBind(SocketAddress localAddress) throws Exception {
+                if (PlatformDependent.javaVersion() >= 7) {
+                    javaChannel().bind(localAddress, config.getBacklog());
+                } else {
+                    javaChannel().socket().bind(localAddress, config.getBacklog());
+                }
+            }
+            ```
+    
+            - 很明显backlog参数来自于config(成员变量)
+    
+              ```java
+              //ServerSocketChannelConfig是一个接口此时我们查看Nio的实现类NioServerSocketChannelConfig
+              private final ServerSocketChannelConfig config;
+              //其中定义了以下方法，该方法的实现类中含有DefaultServerSocketChannelConfig，该类是NioServerSocketChannelConfig的父类
+              int getBacklog();
+              //DefaultServerSocketChannelConfig getBacklog方法
+              
+              @Override
+              public int getBacklog() {
+                  return backlog;
+              }
+              //成员变量
+              private volatile int backlog = NetUtil.SOMAXCONN;
+              
+              ```
+    
+              - NetUtil中的SOMAXCONN
+    
+                ```java
+                public static final int SOMAXCONN;
+                
+                //初始化该参数方法
+                SOMAXCONN = AccessController.doPrivileged(new SoMaxConnAction());
+                //SoMaxConnAction的run方法中
+                 int somaxconn = PlatformDependent.isWindows() ? 200 : 128;
+                ```
+    
+                - 如果是windows系统则backlog为200，否则设置为128
