@@ -2001,3 +2001,263 @@
                 ```
     
                 - 如果是windows系统则backlog为200，否则设置为128
+      
+    - ulimit -n参数设置
+    
+      - 用于设置linux最大文件打开数量（也可以理解为最大Socket链接数量），本身是一个临时参数，建议在启动脚本中添加作为启动参数
+    
+    - TCP_NODELAY
+    
+      - nodelay算法，对于较小的数据流等待缓冲区写满后再发送，Netty默认开启该算法
+    
+    - SO_SNDBUF （建议不调整，操作系统会自动调整）
+    
+      - 发送缓冲区大小
+    
+    - SO_RCVBUF（建议不调整，操作系统会自动调整）
+    
+      - 接受缓冲区大小设置
+    
+    - ALLOCATOR
+    
+      - 用于分配ByteBuf内存的设置
+    
+      - ByteBuf的默认实现是池化的直接内存的ByteBuffer
+    
+        - 源码(ChannelConfig类)
+    
+          ```java
+          //DefaultChannelConfig实现
+          private volatile ByteBufAllocator allocator = ByteBufAllocator.DEFAULT;
+          
+          ```
+    
+        - ByteBufAllocator接口
+    
+          ```java
+          ByteBufAllocator DEFAULT = ByteBufUtil.DEFAULT_ALLOCATOR;//成员变量
+          ```
+    
+        - ByteBufUtil
+    
+          ```java
+          static final ByteBufAllocator DEFAULT_ALLOCATOR;
+          
+          static {
+              //从系统参数中获取io.netty.allocator.type，如果没有则默认为如果是安卓系统则采用非池化，否则采用池化
+              String allocType = SystemPropertyUtil.get(
+                  "io.netty.allocator.type", PlatformDependent.isAndroid() ? "unpooled" : "pooled");
+              allocType = allocType.toLowerCase(Locale.US).trim();
+          
+              ByteBufAllocator alloc;
+              if ("unpooled".equals(allocType)) {
+                  //UnpooledByteBufAllocator.DEFAULT的定义如下
+                  
+                  //public static final UnpooledByteBufAllocator DEFAULT =
+                  //    new UnpooledByteBufAllocator(PlatformDependent.directBufferPreferred());
+                  
+                  alloc = UnpooledByteBufAllocator.DEFAULT;
+                  logger.debug("-Dio.netty.allocator.type: {}", allocType);
+              } else if ("pooled".equals(allocType)) {
+                  alloc = PooledByteBufAllocator.DEFAULT;
+                  logger.debug("-Dio.netty.allocator.type: {}", allocType);
+              } else {
+                  //上下文无法得出缓冲区类型则采用池化
+                  alloc = PooledByteBufAllocator.DEFAULT;
+                  logger.debug("-Dio.netty.allocator.type: pooled (unknown: {})", allocType);
+              }
+          
+              DEFAULT_ALLOCATOR = alloc;
+          //本地线程缓冲区大小设置
+              THREAD_LOCAL_BUFFER_SIZE = SystemPropertyUtil.getInt("io.netty.threadLocalDirectBufferSize", 0);
+              logger.debug("-Dio.netty.threadLocalDirectBufferSize: {}", THREAD_LOCAL_BUFFER_SIZE);
+          //最大缓冲区设置
+              MAX_CHAR_BUFFER_SIZE = SystemPropertyUtil.getInt("io.netty.maxThreadLocalCharBufferSize", 16 * 1024);
+              logger.debug("-Dio.netty.maxThreadLocalCharBufferSize: {}", MAX_CHAR_BUFFER_SIZE);
+          }
+          ```
+    
+        - 缓冲区是否采用直接内存（alloc = UnpooledByteBufAllocator.DEFAULT;）
+    
+          ```java
+          public static final UnpooledByteBufAllocator DEFAULT =
+              new UnpooledByteBufAllocator(PlatformDependent.directBufferPreferred());
+          
+          public UnpooledByteBufAllocator(boolean preferDirect) {
+              this(preferDirect, false);
+          }
+          ```
+    
+          - directBufferPreferred方法
+    
+            ```java
+            public static boolean directBufferPreferred() {
+                return DIRECT_BUFFER_PREFERRED;
+            }
+            //成员变量DIRECT_BUFFER_PREFERRED
+            private static final boolean DIRECT_BUFFER_PREFERRED;
+            //该变量初始化操作（static代码块中中）
+            //如果我们可以使用一个Cleaner来释放直接缓冲区，我们应该总是默认选择直接缓冲区。
+            //NOOP是一个什么都不做的Cleaner，如果当前Cleaner不等于NOOP且系统参数中io.netty.noPreferDirect的值为null或者为false则采用直接内存分配
+            DIRECT_BUFFER_PREFERRED = CLEANER != NOOP
+                                              && !SystemPropertyUtil.getBoolean("io.netty.noPreferDirect", false);
+            //cleaner和NOOP是成员变量
+            private static final Cleaner CLEANER;
+            
+            private static final Cleaner NOOP = new Cleaner() {
+                    @Override
+                    public void freeDirectBuffer(ByteBuffer buffer) {
+                        // NOOP
+                    }
+                };
+            //
+            ```
+    
+            - 在静态代码块中
+    
+              ```java
+              if (!isAndroid()) {
+                  // only direct to method if we are not running on android.
+                  // See https://github.com/netty/netty/issues/2604
+                  if (javaVersion() >= 9) {
+                      //如果含有Cleaner则采用自带的Cleaner否则采用NOOP（该cleaner什么都不会做）
+                      CLEANER = CleanerJava9.isSupported() ? new CleanerJava9() : NOOP;
+                  } else {
+                      CLEANER = CleanerJava6.isSupported() ? new CleanerJava6() : NOOP;
+                  }
+              } else {
+                  CLEANER = NOOP;
+              }
+              ```
+    
+              - 可以看出在安卓系统中ClEANER直接采用了NOOP，在非安卓系统中根据JDK版本来选择（以11为例）
+    
+                ```java
+                 //CleanerJava9.isSupported()
+                //成员变量
+                private static final Method INVOKE_CLEANER;
+                static boolean isSupported() {
+                    return INVOKE_CLEANER != null;
+                }
+                ```
+    
+                - INVOKE_CLEANER初始化
+    
+                  ```java
+                  static {
+                      final Method method;
+                      final Throwable error;
+                      //如果static final Unsafe UNSAFE;不为空
+                      if (PlatformDependent0.hasUnsafe()) {
+                          final ByteBuffer buffer = ByteBuffer.allocateDirect(1);
+                          //执行Run方法
+                          Object maybeInvokeMethod = AccessController.doPrivileged(new PrivilegedAction<Object>() {
+                              @Override
+                              public Object run() {
+                                  try {
+                                      // 获取invokeCleaner方法（ByteBuffer作为参数）
+                                      Method m = PlatformDependent0.UNSAFE.getClass().getDeclaredMethod(
+                                          "invokeCleaner", ByteBuffer.class);
+                                      //尝试执行清理方法，如果抛出异常则返回异常否则返回invokeCleaner方法
+                                      m.invoke(PlatformDependent0.UNSAFE, buffer);
+                                      return m;
+                                  } catch (NoSuchMethodException e) {
+                                      return e;
+                                  } catch (InvocationTargetException e) {
+                                      return e;
+                                  } catch (IllegalAccessException e) {
+                                      return e;
+                                  }
+                              }
+                          });
+                  //如果doPrivileged中的Run方法返回的是异常则设置Cleaner为null
+                          if (maybeInvokeMethod instanceof Throwable) {
+                              method = null;
+                              error = (Throwable) maybeInvokeMethod;
+                          } else {
+                              //否则设置该方法为Cleaner
+                              method = (Method) maybeInvokeMethod;
+                              error = null;
+                          }
+                      } else {
+                          method = null;
+                          error = new UnsupportedOperationException("sun.misc.Unsafe unavailable");
+                      }
+                      if (error == null) {
+                          logger.debug("java.nio.ByteBuffer.cleaner(): available");
+                      } else {
+                          logger.debug("java.nio.ByteBuffer.cleaner(): unavailable", error);
+                      }
+                      //设置Cleaner
+                      INVOKE_CLEANER = method;
+                  }
+                  ```
+    
+                  
+    
+        - 这也代表了缓冲区实现可以通过VM参数设置
+    
+          ```shell
+          -Dio.netty.allocator.type
+          ```
+    
+    - RCVBUF_ALLOCATOR
+    
+      - 负责入站数据分配，决定入栈缓冲区大小（并可动态调整），统一采用直接内存分配，具体池化取决于Allocator
+    
+      - 源码（打上断点顺着堆栈向上找到read方法）
+    
+        ```java
+        //部分代码
+        final ChannelConfig config = config();
+        if (shouldBreakReadReady(config)) {
+            clearReadPending();
+            return;
+        }
+        final ChannelPipeline pipeline = pipeline();
+        //从ChannelConfig中获取ByteBufAllocator
+        final ByteBufAllocator allocator = config.getAllocator();
+        //获取接受AllocatorHandler
+        final RecvByteBufAllocator.Handle allocHandle = recvBufAllocHandle();
+        allocHandle.reset(config);
+        
+        ByteBuf byteBuf = null;
+        boolean close = false;
+        try {
+            do {
+                //allocHandler通过Config中的allocator分配内存
+                byteBuf = allocHandle.allocate(allocator);
+                //上次缓冲区的拼接
+                allocHandle.lastBytesRead(doReadBytes(byteBuf));
+                if (allocHandle.lastBytesRead() <= 0) {
+                    // nothing was read. release the buffer.
+                    byteBuf.release();
+                    byteBuf = null;
+                    close = allocHandle.lastBytesRead() < 0;
+                    if (close) {
+                        // There is nothing left to read as we received an EOF.
+                        readPending = false;
+                    }
+                    break;
+                }
+        
+                allocHandle.incMessagesRead(1);
+                readPending = false;
+                pipeline.fireChannelRead(byteBuf);
+        ```
+    
+        - allocHandle调用allocate方法
+    
+          ```java
+          
+          @Override
+          public ByteBuf allocate(ByteBufAllocator alloc) {
+              return alloc.ioBuffer(guess());//IOBuffer只会采用直接内存
+          }
+          
+          //alloc方法（来自于AbstractByteBufAllocator）
+          
+          ```
+    
+          
+
