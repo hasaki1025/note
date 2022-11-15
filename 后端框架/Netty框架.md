@@ -2255,9 +2255,19 @@
               return alloc.ioBuffer(guess());//IOBuffer只会采用直接内存
           }
           
-          //alloc方法（来自于AbstractByteBufAllocator）
-          
+          //ioBuffer方法（来自于AbstractByteBufAllocator）
+          @Override
+          public ByteBuf ioBuffer(int initialCapacity) {
+              //如果采用池化或者hasUnsafe为true则直接采用直接内存
+              if (PlatformDependent.hasUnsafe() || isDirectBufferPooled()) {
+                  return directBuffer(initialCapacity);
+              }
+              return heapBuffer(initialCapacity);
+          }
           ```
-    
           
+  
+  - ## 案例： RPC框架
+  
+    - 
 
