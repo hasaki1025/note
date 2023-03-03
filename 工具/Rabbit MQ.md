@@ -558,41 +558,153 @@
   
       - 也可以在Web网页上手动添加交换机和队列并绑定
   
-  - ### 案例:双消费者接受同一交换机的消息
+  - ### Fanout交换机
   
-    - 消费者
+    - 类似广播
   
-    ```java
-    Channel channel = new MQUtil().getChannel();
-    //指定交换机类型和名称
-            channel.exchangeDeclare("exchange1","fanout");
-            String queue = channel.queueDeclare().getQueue();
-            channel.queueBind(queue,"exchange1","123");
-            System.out.println("消费者开始监听消息");
-    
-            CancelCallback cancelCallback=System.out::println;
-            DeliverCallback deliveryCallback=(var1, var2)->{
-                System.out.println(new String(var2.getBody()));
-            };
-            channel.basicConsume(queue,true,deliveryCallback, cancelCallback);
-    ```
+    - 只要队列绑定了该交换机就会收到该交换机收到的所有消息，无关routeingkey，且该交换机的速度也是最快的
   
-    - 生产者
+    - 案例：两个消费者共同消费
+  
+      - 消费者
   
       ```java
-       MQUtil mqUtil = new MQUtil();
-              Channel channel = mqUtil.getChannel();
-              String message="hello";
-      //第二个参数填写路由Key
-              channel.basicPublish("exchange1","123",null,message.getBytes(StandardCharsets.UTF_8));
+      public class fanoutConsumer {
+          public static final String EXCHANE_NAME="fanoutExchange";
+          public static final String FANOUT_ROUTING_KEY="fanout1";
+          public static void main(String[] args) {
+              try {
+                  Channel channel = RabbitMqUtil.getChannel();
+                  //创建fanout交换机
+                  channel.exchangeDeclare(EXCHANE_NAME, BuiltinExchangeType.FANOUT);
+                  //创建临时队列
+                  String queueName = channel.queueDeclare().getQueue();
+                  //绑定队列和交换机
+                  channel.queueBind(queueName,EXCHANE_NAME,FANOUT_ROUTING_KEY);
+                  //接受消息
+                  channel.basicConsume(queueName,true,(tag,deliver)->{
+                      System.out.println("consumer message > message tag: "+tag);
+                      System.out.println("message body: "+new String(deliver.getBody()));
+                  },System.out::println);
+              } catch (IOException | TimeoutException e) {
+                  e.printStackTrace();
+              }
+          }
+      }
+      
       ```
   
-    - 如果采用fanout交换机，则路由Key就不起作用，如果采用direct交换机则路由Key会正常工作
+      - 生产者
+  
+        ```java
+        public class fanoutProvider {
+            public static void main(String[] args) throws IOException, TimeoutException {
+                Channel channel = RabbitMqUtil.getChannel();
+                for (int i = 0; i < 10; i++) {
+                    String message="message"+i;
+                    channel.basicPublish(fanoutConsumer.EXCHANE_NAME,fanoutConsumer.FANOUT_ROUTING_KEY, MessageProperties.MINIMAL_BASIC,message.getBytes(StandardCharsets.UTF_8));
+                }
+        
+            }
+        }
+        
+        ```
+  
+  - ### Direct交换机
+  
+    - 通过不同的Routingkey进行路由转发
+  
+    - 队列和交换机声明与绑定
+  
+      ```java
+      public class directExchangeDeclare {
+          public static final String EXCHANGE_NAME="direct";
+      
+          public static void main(String[] args) throws IOException, TimeoutException {
+              Channel channel = RabbitMqUtil.getChannel();
+              channel.exchangeDeclare(EXCHANGE_NAME, BuiltinExchangeType.DIRECT);
+              channel.queueDeclare("info",true,false,true,new HashMap<>());
+              channel.queueDeclare("debug",true,false,true,new HashMap<>());
+              channel.queueDeclare("error",true,false,true,new HashMap<>());
+              channel.queueBind("info",EXCHANGE_NAME,"1");
+              channel.queueBind("debug",EXCHANGE_NAME,"2");
+              channel.queueBind("error",EXCHANGE_NAME,"3");
+          }
+      }
+      
+      ```
   
   - ### Topic交换机
   
-    - 对于需要广播的消息可以采用direct，对于发送到指定队列的消息可以采用direct，但是如果要发送给不同RouteKey的队列无法通过Direct和fanout实现
-    - Topic交换机的routekey比较特殊，类似于包名，如com.java.rabbitmq，其中可以采用类似模糊查询的方法
-    - “ * ”代表一个单词，“ # ”代表多个单词
+    - 类似与广播但和广播不同，可以理解为可以该交换机可以通过类似与正则表达的形式将消息转发给符合条件的队列
+  
+    - Topic交换机绑定的routekey可以使用*(代表一个单词)和#（代表多个单词），如果发送message.info和message.debug消息，则绑定的key为message. * 的队列便可收到消息
+  
+      - 群发案例
+  
+        - 队列和交换机声明
+  
+        ```java
+        public class TopicExchangeDeclare {
+            public static final String EXCHANGE_NAME="topic";
+            public static void main(String[] args) throws IOException, TimeoutException {
+                Channel channel = RabbitMqUtil.getChannel();
+                channel.exchangeDeclare(EXCHANGE_NAME, BuiltinExchangeType.TOPIC);
+                channel.queueDeclare("message",false,false,false,new HashMap<>());
+                channel.queueDeclare("message.info",false,false,false,new HashMap<>());
+                channel.queueDeclare("message.debug",false,false,false,new HashMap<>());
+                channel.queueBind("message.info",EXCHANGE_NAME,"message.1",new HashMap<>());
+                channel.queueBind("message.debug",EXCHANGE_NAME,"message.2",new HashMap<>());
+                channel.queueBind("message",EXCHANGE_NAME,"message.*",new HashMap<>());
+            }
+        }
+        
+        ```
+        
+        - 消费者
+        
+          ```java
+          public class MessageConsumer {
+              public static void main(String[] args) throws IOException, TimeoutException {
+                  Channel channel = RabbitMqUtil.getChannel();
+                  channel.basicConsume("message.info",true,(tag,deliver)->{
+                      System.out.println("message routing key: "+deliver.getEnvelope().getRoutingKey());
+                      System.out.println("message body: "+ new String(deliver.getBody()));
+                  },System.out::println);
+                  channel.basicConsume("message.debug",true,(tag,deliver)->{
+                      System.out.println("message routing key: "+deliver.getEnvelope().getRoutingKey());
+                      System.out.println("message body: "+ new String(deliver.getBody()));
+                  },System.out::println);
+                  channel.basicConsume("message",true,(tag,deliver)->{
+                      System.out.println("message routing key: "+deliver.getEnvelope().getRoutingKey());
+                      System.out.println("message body: "+ new String(deliver.getBody()));
+                  },System.out::println);
+              }
+          }
+          
+          ```
+        
+        - 生产者
+        
+          ```java
+          public class Provider {
+              public static void main(String[] args) throws IOException, TimeoutException {
+                  Channel channel = RabbitMqUtil.getChannel();
+                  for (int i = 0; i < 100; i++) {
+                      String msg="message"+i;
+                      String routKey="message."+(i%2+1);
+                      channel.basicPublish(EXCHANGE_NAME,routKey,MessageProperties.PERSISTENT_BASIC,msg.getBytes(StandardCharsets.UTF_8));
+                  }
+          
+              }
+          }
+          ```
+    
+  - ### 死信队列
+  
+    - 当消息无法被正常消费时将消息存入一个死信队列
+    - 情况一：消息 TTL 过期
+    
+    
 
 ​			

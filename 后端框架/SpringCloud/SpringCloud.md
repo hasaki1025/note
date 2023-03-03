@@ -180,7 +180,9 @@
   
         ![image-20220820180121291](SpringCloud.assets/image-20220820180121291.png)
   
-      - ##### IRule接口（负载均衡策略）
+      - ##### IRule接口（负载均衡策略）（已废弃）
+  
+        - https://ask.csdn.net/questions/7718783（之后不再使用IRule接口）
   
         ![image-20220820180308066](SpringCloud.assets/image-20220820180308066.png)
   
@@ -191,7 +193,7 @@
         - 调整负载均衡策略
   
           - 方法一：添加一个IRule的bean
-  
+        
             ```java
             @Bean
             public IRule changeIRule()
@@ -201,7 +203,7 @@
             ```
   
           - 方法二：通过配置文件形式
-  
+        
             ```yaml
             #userservice是服务名称
             userservice:
@@ -214,7 +216,7 @@
       - Ribbon默认采用懒加载，第一次访问才会去创建LoadBalanceClient，请求时间会较长
   
       - 通过配置文件可以设置饥饿加载从而降低第一次访问的耗时
-  
+    
         ```yaml
         ribbon: 
         	eager-load:
@@ -245,13 +247,13 @@
     - 启动Nacos(切换到Nacos的bin目录下)
     
       ```shell
-      sh startup.sh
+      sh startup.sh -m standalone
       ```
       
     - 启动后通过浏览器访问nacos页面
     
       ```url
-      http://192.168.10.10/nacos/index.html#login
+      http://192.168.10.10/nacos/index.html
       ```
     
     - 具体教程https://blog.csdn.net/qq_46112274/article/details/123117926
@@ -259,24 +261,29 @@
     - 登录默认密码和账号为nacos
     
   - ### Nacos服务注册
-  
+
     - 在springcloud commons中定义了服务注册和发现相关的接口，nacos同样实现了这些接口
-  
+
     - 添加springcloud alibaba依赖
-  
+
       - 版本对应图
-  
+
         <img src="SpringCloud.assets/watermark,type_d3F5LXplbmhlaQ,shadow_50,text_Q1NETiBA5LiD5a-46Zu257OW,size_20,color_FFFFFF,t_70,g_se,x_16#pic_center.jpeg" alt="在这里插入图片描述" style="zoom: 67%;" />
-  
+
       - 注释掉Eureka-client依赖并添加nacos客户端依赖
-  
+
         ```xml
         <dependency>
             <groupId>com.alibaba.cloud</groupId>
             <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
         </dependency>
+        <!--如果使用RestTemple则需要添加该依赖-->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-loadbalancer</artifactId>
+        </dependency>
         ```
-  
+      
       - 配置文件nacos
       
         ```yaml
@@ -287,9 +294,9 @@
         ```
     
   - ### Nacos服务集群配置
-  
+
     - **配置文件**
-  
+
       ```yaml
       spring:
       	cloud:
@@ -298,20 +305,20 @@
       			discovery:
               		cluster-name: GUANGDONG
       ```
-  
+
     - **负载均衡**
-  
+
       - 同集群优先：此时采用的负载均衡政策是轮询并没有遵守同集群优先的原则，可以通过配置文件或者Bean注入修改负载均衡政策，修改的政策类为com.alibaba.cloud.nacos.ribbon.NacosRule
       - 权重：可以通过网页设置每个节点的权重，权重越高优先级越高
-  
+
     - **环境隔离**
-  
+
       - Nacos支持创建不同的namespace来达到多环境开发的效果
-  
+
       - namespace的添加可以直接在页面中添加，添加后可以获取到namespace的id
-  
+
       - 添加配置文件
-  
+
         ```yaml
         spring:
             cloud:
@@ -322,20 +329,20 @@
                         namespace: 7d302589-ab2e-466b-9345-fd4d0c3c2092 #namespace id
         
         ```
-  
+
       - 不同namespace之间无法访问
-  
+
   - ### Nacos和Eureka对比
-  
+
     - 相同点
-  
+
       - 服务提供者注册服务
       - 服务消费者消费时向注册中心发起请求获取服务列表，该列表同时由缓存负责每次消费者发起请求时会先在缓存中查找，找不到才会在注册中心中拉取服务
-  
+
     - 不同点
-  
+
       - Nacos将服务划分为临时实例和非临时实例，临时实例每隔一段时间向Nacos发送信号，非临时实例不发送信号而是由Nacos向非临时实例发送信号，如果没有收到回应，临时实例会被直接剔除，非临时实例会被标识为不健康
-  
+
         ```yaml
         spring:
             cloud:
@@ -346,28 +353,29 @@
                         namespace: 7d302589-ab2e-466b-9345-fd4d0c3c2092 #namespace id
                         ephemeral: false #配置非临时实例
         ```
-  
+
       - Eureka对于服务列表缓存的维护采用的是每隔一段时间进行服务拉取，Nacos采用的是服务拉取+服务推送（每隔一段时间将服务推送至服务列表缓存）
     
   - ### Nacos配置管理
-  
+
     - 配置统一管理热更新
-  
+
       - 在页面中添加配置，date ID指的是配置文件的名称，一般以服务名-环境名称.后缀名 命名
-  
+
       - 读取nacos配置文件以完善application.yml，但是要使nacos配置文件先于application.yml文件读取，就会导致无法获取Nacos的地址，这是由于Nacos的地址在application.yml中，此时采用bootstrap.yml配置文件，该配置文件优先级高于application.yml
-  
+
         - 引入Nacos-config管理依赖
-  
+
           ```xml
           <dependency>
               <groupId>com.alibaba.cloud</groupId>
               <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
           </dependency>
+          
           ```
-  
+        
         - 配置bootstrap.yml文件
-  
+        
           ```yaml
           spring:
             application:
@@ -380,29 +388,29 @@
                 config:
                   file-extension: yaml
           ```
-  
+        
           - 配置三要素（服务名称、环境名称、后缀名）和nacos地址
-  
+        
         - 配置热更新
-  
+        
           - 方式一：添加注解@RefreshScope在主启动类上，也可以添加在需要配置文件的类上
           - 方式二： 使用@ConfigurationProperties注解向实体类中注入属性可以直接完成热更新
-  
+        
         - 启动服务
-  
+    
     - 多环境配置
-  
+    
       - 每次微服务启动时会读取多个配置文件
-  
+    
         - 服务名称-环境.后缀
         - 服务名称.后缀
           - 该配置文件与环境无关，所以一些与环境无关的配置可以放置在这里，这些变量会被多环境读取
-  
+    
       
       - 多种配置优先级：当前环境配置>多环境配置>本地配置
     
   - Nacos集群搭建
-  
+
     - 修改cluster.conf.example为cluster.conf并添加集群信息（各个节点的端口号）
 
 - ## HTTP客户端Feign
