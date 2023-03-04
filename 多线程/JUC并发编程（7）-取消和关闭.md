@@ -406,7 +406,206 @@
     - 通过线程池封装上面的日志服务
 
       ```java
+      public class LogService {
+      
+          private final ExecutorService executorService= Executors.newSingleThreadExecutor();
+      
+          private volatile boolean isShutdowned=false;
+      
+          public void shutdown() throws InterruptedException {
+              if (!isShutdowned)
+              {
+                  isShutdowned=true;
+                  executorService.shutdown();
+                  if (!executorService.awaitTermination(1, TimeUnit.SECONDS)) {
+                      List<Runnable> runnables = executorService.shutdownNow();
+                      System.out.println("剩余任务数:"+ runnables.size());
+                  }
+                  System.out.println("shutdown.....");
+              }
+          }
+      
+          public void log(String s)  {
+              if (!isShutdowned)
+              {
+                 executorService.execute(new logRunnable(s));
+              }
+          }
+          private class logRunnable implements Runnable
+          {
+      
+              private final String message;
+      
+      
+              public logRunnable(String message) {
+      
+                  this.message = message;
+              }
+      
+              @Override
+              public void run() {
+                  try {
+                      sleep(1000);
+                      System.out.println("log:"+message);
+                  } catch (InterruptedException e) {
+                      e.printStackTrace();
+                  }
+              }
+      
+          }
+      }
+      
+      ```
+      
+      - 使用单例线程池自带的shutdown方法和shutdownNow方法
+        - shutdown只会等待线程池中所有任务执行完成
+        - shutdownNow会给没有终止的任务设置中断信号
+        - awaitTermination会堵塞直到超时或者线程池关闭，如果超时则会返回false，此时可以通过shutdownNow关闭线程池
+    
+  - 毒丸对象
+  
+    - 在生产者消费者模型上，如果需要停止线程可以通过安排一个特殊的毒丸任务，执行到毒丸任务时关闭线程池，通过毒丸对象可以停止无限循环的线程
+  
+      ```java
+      public class IndexService {
+      
+          private volatile boolean isShutdown=false;
+          private final String POISON ="我是毒丸";
+          private final BlockingQueue<Object> blockingQueue=new LinkedBlockingQueue<>();
+      
+          private volatile boolean isInit=false;
+      
+          private final Producer producer=new Producer();
+          private final Consumer consumer=new Consumer();
+      
+          public void init()
+          {
+              if (!isInit)
+              {
+                  isInit=true;
+                  System.out.println("init.....");
+                  producer.start();
+                  consumer.start();
+              }
+          }
+      
+          public void shutdown() {
+              if (!isShutdown)
+              {
+                  isShutdown=true;
+                  System.out.println("shutdown");
+                  producer.interrupt();
+              }
+          }
+      
+          public void awaitShutdown() throws InterruptedException {
+              producer.join();
+          }
+      
+      
+          public class Producer extends Thread{
+      
+              @Override
+              public void run() {
+                  try {
+                      crawl();
+                  } catch (InterruptedException e) {
+                      //无需响应直接进入finally
+                      e.printStackTrace();
+                  }
+                  finally {
+                      while (true)
+                      {
+                          try {
+                              blockingQueue.put(POISON);
+                              break;
+                          } catch (InterruptedException e) {
+                             //无视，该异常是由于put方法带来的，我们需要再次尝试放入毒丸对象直到成功为止
+                              e.printStackTrace();
+                          }
+                      }
+                  }
+              }
+          }
+      
+          private void crawl() throws InterruptedException
+          {
+              while (true)
+              {
+                  //执行生产者任务
+                  sleep(1000);
+                  blockingQueue.put("nihao");
+              }
+          }
+      
+          public class Consumer extends Thread{
+              @Override
+              public void run() {
+                      try {
+                          while (true) {
+                              Object take = blockingQueue.take();
+                              if (take == POISON) {
+                                  System.out.println("找到毒丸了");
+                                  break;
+                              }
+                              sleep(2000);
+                              System.out.println("执行任务..."+take);
+                          }
+                      } catch (InterruptedException e) {
+                          //如果能通过中断停止那最好
+                          e.printStackTrace();
+                      }
+              }
+          }
+      
+      }
+      
+      ```
+  
+  - shutdownNow的局限性
+  
+    - shutdownNow将会返回所有未开始的任务，但是对于已经开始尚未结束的任务的状态我们是无法获取的
+  
+- ## 处理非正常的线程终止
+
+  - UncaughtExceptionHandler
+
+    - UncaughtExceptionHandler能够检测并捕获导致线程意外终止的异常
+
+      ```java
+      public interface UncaughtExceptionHandler {
+              void uncaughtException(Thread t, Throwable e);
+          }
+      
+      //使用
+      @Slf4j
+      public class MyUncaughtExceptionHandler implements Thread.UncaughtExceptionHandler {
+          @Override
+          public void uncaughtException(Thread t, Throwable e) {
+              log.info(t.getName()+"get exception: "+e.getMessage());
+              e.printStackTrace();
+          }
+      }
+      //测试
+      public class test12 {
+          public static void main(String[] args) {
+              Thread thread = new Thread(() -> {
+                  try {
+                      sleep(2000);
+                      throw new RuntimeException("我是一个错误");
+                  } catch (InterruptedException e) {
+                      throw new RuntimeException(e);
+                  }
+              });
+              thread.setUncaughtExceptionHandler(new MyUncaughtExceptionHandler());
+      
+              thread.start();
+          }
+      }
+      
       ```
 
-      
+      - 如果想要为线程池中的每一个线程都设置一个UncaughtExceptionHandler，可以使用线程工厂
+      - 如果你希望任务由于异常失败时获取通知并执行一定的恢复操作，可以将任务封装到能捕获异常的Callable或者Runnable中，或者可以重写ThreadPollExecutor的afterExecute方法
+      - 在线程池中，只有通过execute执行的任务才会传递给UncaughtExceptionHandler，而submit提交的任务将会通过Future封装，通过get方法抛出ExecutionException
 
