@@ -176,3 +176,79 @@
         ```
 
         - 该方法是protected方法所以需要自己创建一个AbstractExecutorService的子类才能访问该方法
+      
+    - CompletionService
+    
+      - 线程池中提交了一组任务后希望能够计算完成后获得结果，可以将Future保持下来并反复调用get方法，CompletionService提供了类似的工作机制，CompletionService选择将结果放入BlockingQueue中
+    
+      - ExecutorCompletionService
+    
+        - ExecutorCompletionService的实现很简单，只是在构造方法中创建一个BlockingQueue（也可以自定义）用于保存计算任务的Future。
+    
+        - 当计算完成时，调用Future-task的done方法（该方法是在任务完成后的回调方法）。
+    
+        - 当提交一个任务时将Future封装为QueueingFuture,这是一个FutureTask的子类，在改写子类的done方法将结果放入BlockingQueue中
+    
+          ```java
+          public Future<V> submit(Callable<V> task) {
+              if (task == null) throw new NullPointerException();
+              //返回一个FutureTask
+              RunnableFuture<V> f = newTaskFor(task);
+              //封装为QueueingFuture并通过线程池执行
+              executor.execute(new QueueingFuture<V>(f, completionQueue));
+              return f;
+          }
+          
+          //queueFuture实现
+          private static class QueueingFuture<V> extends FutureTask<Void> {
+              QueueingFuture(RunnableFuture<V> task,
+                             BlockingQueue<Future<V>> completionQueue) {
+                  super(task, null);
+                  this.task = task;
+                  this.completionQueue = completionQueue;
+              }
+              private final Future<V> task;
+              private final BlockingQueue<Future<V>> completionQueue;
+              //重写done方法，Future放入队列中
+              //以下是FutureTask中done方法的注释
+              //当此任务转换到状态isDone时调用的受保护方法(无论是正常还是通过取消)。默认实现什么也不做。子类可以重写此方法来调用完成回调或执行记帐。注意，您可以在此方法的实现中查询状态，以确定该任务是否已取消
+              protected void done() { completionQueue.add(task); }
+          }
+          ```
+    
+        - 使用
+    
+          ```java
+          public static void main(String[] args) {
+              CompletionService<Integer> completionService = new ExecutorCompletionService<>(service);
+              //同样可以自己获取future自己查看计算结果
+              Future<Integer> submit = completionService.submit(new Worker());
+              //也可以从completionService获取结果
+              try {
+                  //此时返回的Future是已经计算完成的future，如果没有会堵塞
+                  Future<Integer> take = completionService.take();
+              } catch (InterruptedException e) {
+                  throw new RuntimeException(e);
+              }
+          }
+          ```
+    
+  - 为任务设置时限
+  
+    - 设置时限具体做法
+  
+      ```java
+      Future<Integer> f1 = service.submit(new Worker());
+      try {
+          f1.get(10,TimeUnit.SECONDS);
+      } catch (InterruptedException | ExecutionException e) {
+          e.printStackTrace();
+      } catch (TimeoutException e) {
+          e.printStackTrace();
+          f1.cancel(true);
+      }
+      ```
+  
+    - invokeAll
+  
+      - 线程池提供了invokeAll方法用于执行一组任务，同时返回一组Future（结构和提交时的任务组相同），每个任务最后只有完成和取消两种状态
