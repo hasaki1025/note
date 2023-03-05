@@ -608,4 +608,53 @@
       - 如果想要为线程池中的每一个线程都设置一个UncaughtExceptionHandler，可以使用线程工厂
       - 如果你希望任务由于异常失败时获取通知并执行一定的恢复操作，可以将任务封装到能捕获异常的Callable或者Runnable中，或者可以重写ThreadPollExecutor的afterExecute方法
       - 在线程池中，只有通过execute执行的任务才会传递给UncaughtExceptionHandler，而submit提交的任务将会通过Future封装，通过get方法抛出ExecutionException
+  
+- ## JVM关闭
+
+  - 关闭钩子
+
+    - 在正常关闭中，JVM首先调用所有已注册的关闭钩子(shutdown hook),关闭钩子指的是通过Runtime.addShutdownHook注册但未开始的线程，JVM不能保证关闭钩子的执行顺序
+
+    - 关闭期间其他线程和关闭钩子并发执行，当所有关闭钩子执行完成后如果runFinalizersOnExit为true，那么jvm将运行终结器然后再停止，JVM不会强制其他线程中断或者停止，但是当终结器执行完成JVM关闭后所有线程都将强行结束
+
+    - 关闭钩子
+
+      - 需要是线程安全的
+      - 访问共享变量时需要注意避免死锁
+      - 需要尽快退出，关闭钩子会延迟JVM的退出
+
+    - 日志服务注册关闭钩子
+
+      ```java
+      public void start()
+      {
+          executorService.execute(new LogRunnable());
+          Runtime.getRuntime().addShutdownHook(new Thread(){
+              @Override
+              public void run() {
+                  try {
+                      logService.this.stop();
+                  } catch (InterruptedException e) {
+                      e.printStackTrace();
+                  }
+              }
+          });
+      }
+      ```
+
+      - 关闭钩子不能依赖于其他将会被其他关闭钩子关闭的服务，实现这种功能的唯一方式是所有服务共用一个钩子，避免关闭操作之间出现竞态条件和死锁
+
+  - 守护线程
+
+    - 子线程将继承父线程的性质，如非守护线程创建的都是非守护线程
+    - 当JVM停止时，所有守护线程都将终止（也不会执行finally）
+    - 尽可能不要使用守护线程
+
+  - 终结器
+
+    - 对于大部分内存资源都可以通过来及垃圾回收器收集，但是类似于套接字或者文件句柄当不需要它们的时候需要显式的还给操作系统
+    - 终结器并不能保证何时运行甚至是否运行，并且复杂的终结器还会带来巨额的内存开销，所以一般使用finally和close方法
+    - 请避免使用终结器
+
+
 
