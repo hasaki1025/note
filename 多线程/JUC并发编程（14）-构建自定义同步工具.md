@@ -208,7 +208,173 @@
       }
       ```
 
-      - 仅当状态从非空到空或者空到非空才唤醒（减少唤醒次数，也就是没有线程等待就不需要唤醒了）
+      - 仅当状态从非空到空或者空到**非空才**唤醒（减少唤醒次数，也就是没有线程等待就不需要唤醒了）
 
-  - 
+  - 示例：阀门类
+  
+    - 闭锁可以实现类似于阀门的效果，但是闭锁只能打开一次，通过条件队列可以设计一个可多次打开的阀门
+  
+      ```java
+      public class ThreadGate {
+          
+          private boolean isOpen;
+          private int version=1;
+          
+          public synchronized void close()
+          {
+              isOpen=false;
+          }
+          
+          public synchronized void open()
+          {
+              version++;
+              isOpen=true;
+              notifyAll();
+          }
+          
+          public synchronized void await() throws InterruptedException {
+              int ownerVersion = version;
+              while (!isOpen && ownerVersion==version)
+              {
+                  wait();
+              } 
+          }
+      }
+      
+      ```
+  
+      - 当一个线程等待阀门开启时会先获得当前阀门的版本（或者说当前是第几次关闭），如果阀门打开（Isopen为true），此时阀门版本变化，第二条件不满足，即便当isOpen设为true后又快速设置为false，在该版本阀门前等待的线程也能顺利执行
+  
+  - 入口协议和出口协议
+  
+    - 入口协议
+      - 该操作的条件谓词
+    - 出口协议
+      - 检查条件谓词有关的变量并通知（如果条件为true）
+  
+  - 显示的Condition对象
+  
+    - Condition是一种广义上的内置条件队列
+  
+      ```java
+      public interface Condition {
+          //和wait差不多
+          void await() throws InterruptedException;
+      //不接受中断的wait
+          void awaitUninterruptibly();
+          //wait超时版本但是时间单位是纳秒
+          long awaitNanos(long nanosTimeout) throws InterruptedException;
+      	//超时版本
+          boolean await(long time, TimeUnit unit) throws InterruptedException;
+      	//指定结束时间
+          boolean awaitUntil(Date deadline) throws InterruptedException;
+      //类似于notify
+          void signal();
+      //类似于notifyAll
+          void signalAll();
+      }
+      ```
+  
+    - 使用
+  
+      ```java
+      void test() throws InterruptedException {
+          lock.lockInterruptibly();
+          Condition condition = lock.newCondition();
+          try {
+              condition.await();
+          }finally {
+              lock.unlock(); 
+          }
+      }
+      ```
+  
+    - 内置锁的缺陷，一个锁只能有一个条件队列，但是一个条件队列中的线程各自等待的条件谓词可能不同，而Condition类不同，Condition拥有更加丰富的方法，并且，一个Lock可以对于多个Condition（一个Condition只能有一个lock）
+  
+    - 示例：通过Condition实现有界缓存
+  
+      ```java
+      package org.chapter14.test03;
+      
+      import java.util.concurrent.locks.Condition;
+      import java.util.concurrent.locks.ReentrantLock;
+      
+      public class ReentrantLockBoundedBuffer<V> {
+      
+      
+          protected ReentrantLockBoundedBuffer(int capacity) {
+              this.buf = (V[]) new Object[capacity];
+          }
+          
+          private final ReentrantLock lock=new ReentrantLock();
+          private final Condition notFull=lock.newCondition();
+          private final Condition notEmpty=lock.newCondition();
+      
+      
+          private final V[] buf;
+          private int tail;
+          private int head;
+          private int count;
+      
+      
+      
+          protected  final void doPut(V v) {
+              buf[tail] = v;
+              if (++tail == buf.length)
+                  tail = 0;
+              ++count;
+          }
+      
+          protected  final V doTake() {
+              V v = buf[head];
+              buf[head] = null;
+              if (++head == buf.length)
+                  head = 0;
+              --count;
+              return v;
+          }
+      
+          public  final boolean isFull() {
+              return count == buf.length;
+          }
+      
+          public  final boolean isEmpty() {
+              return count == 0;
+          }
+          
+          public V take() throws InterruptedException {
+              lock.lockInterruptibly();
+              try {
+                while (!isEmpty())
+                {
+                    notEmpty.await();
+                }
+                  V v = doTake();
+                notFull.signal();
+                  return v;
+              }
+              finally {
+                  lock.unlock();
+              }
+          }
+          
+          
+          public void put(V v) throws InterruptedException {
+              lock.lockInterruptibly();
+              try {
+                  while (!isFull())
+                  {
+                      notFull.await();
+                  }
+                  doPut(v);
+                  notEmpty.signal();
+              }finally {
+                  lock.unlock();
+              }
+          }
+      }
+      
+      ```
+  
+      
 
