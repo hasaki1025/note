@@ -376,5 +376,440 @@
       
       ```
   
+- ## synchronizer剖析
+
+  - AbstractQueuedSynchronizer
+
+    - 如果一个类想成为状态依赖的类，必须拥有一些状态，可以通过getState、setState、compareAndSetstate等方法来操作状态，AQS中保存了一个整数型变量state来表示状态，比如在可重入锁中该状态的意思是所有者线程已重复获取该锁的次数，信号量用来表示剩余的许可，FutureTask用来表示任务的状态，同步器类中还可以自己管理一些额外的变量，如可重入锁用一个变量来表示当前占用该锁的线程（可重入实现）
+
+    - AQS的获取操作可以是独占的也可以是非独占的,获取操作可以是阻塞的也可以是非阻塞的,以下是AQS标准的获取操作和释放操作
+
+      ```java
+      boolean acquire throw InterruptedException{
+          while(当前不允许执行操作)
+          {
+              if(需要阻塞)
+              {
+                  阻塞队列中没有该线程则加入
+                  开始阻塞
+              }
+              else
+              {
+                  return false
+              }
+          }
+          
+          可能更新同步器状态
+          如果线程位于队列中则将其移出队列
+          return true;
+      }
+      
+      void release()
+      {
+          更新状态
+          if(新的状态产生该状态是否需要唤醒某些等待线程)
+          {
+              解除符合条件的线程的阻塞状态
+          }
+      }
+      ```
+
+    - 除了基本的获取操作和释放操作(这些方法无法重写)，如果获取操作有独占需求需要实现tryAcquire等方法，采用非独占方式需要实现带有tryAcquireShared等方法
+
+    - 示例：使用AQS实现一个简单的二元闭锁
+
+      ```java
+      public class OneShotLatch {
+      
+      
+          private final Sync sync=new Sync();
+      
+      
+          public void await() throws InterruptedException {
+              sync.acquireSharedInterruptibly(0);
+          }
+      
+          public void release()
+          {
+              sync.releaseShared(0);
+          }
+      
+          private class Sync extends AbstractQueuedSynchronizer{
+              @Override
+              protected int tryAcquireShared(int arg) {
+                  //如果成功返回正数，失败返回负数
+                  return getState()==1 ? 1:-1;
+              }
+      
+              @Override
+              protected boolean tryReleaseShared(int arg) {
+                  setState(1);
+                  return true;
+              }
+          }
+      }
+      ```
+
+      - AQS中的方法原型
+
+        ```java
+        public final void acquireShared(int arg) {
+            if (tryAcquireShared(arg) < 0)
+                doAcquireShared(arg);
+        }
+        //需要行实现
+        protected int tryAcquireShared(int arg) {
+            throw new UnsupportedOperationException();
+        }
+        
+        public final void acquireInterruptibly(int arg)
+            throws InterruptedException {
+            if (Thread.interrupted())
+                throw new InterruptedException();
+            if (!tryAcquire(arg))
+                doAcquireInterruptibly(arg);
+        }
+        //需要实现
+        protected boolean tryAcquire(int arg) {
+            throw new UnsupportedOperationException();
+        }
+        ```
+
+      - OneShotLatch同样也可以通过扩展AQS来实现但是这样会破坏OneShotLatch代码的整洁性，JUC中的所有同步类都没有直接扩展AQS而是采用委托的方式
+
+- ## JUC中的AQS
+
+  - ReentrantLock中AQS的实现
+
+    ```java
+    
+    abstract static class Sync extends AbstractQueuedSynchronizer {
+            private static final long serialVersionUID = -5179523762034025860L;
+    
+            /**
+             * Performs non-fair tryLock.  tryAcquire is implemented in
+             * subclasses, but both need nonfair try for trylock method.
+             */
+            @ReservedStackAccess
+            final boolean nonfairTryAcquire(int acquires) {
+                final Thread current = Thread.currentThread();
+                int c = getState();
+                //未被独占
+                if (c == 0) {
+                    //CAS尝试设置值为acquires（尝试独占）
+                    if (compareAndSetState(0, acquires)) {
+                        //设置独占者线程
+                        setExclusiveOwnerThread(current);
+                        return true;
+                    }
+                }
+                //可重入判断（当前占有的线程是否是当前线程）
+                else if (current == getExclusiveOwnerThread()) {
+                    int nextc = c + acquires;
+                    //整型溢出则抛出异常(重入的次数太多了)
+                    if (nextc < 0) // overflow
+                        throw new Error("Maximum lock count exceeded");
+                    //设置状态
+                    setState(nextc);
+                    //重入成功
+                    return true;
+                }
+                //被其他线程独占了，无法获取
+                return false;
+            }
+    
+            @ReservedStackAccess
+            protected final boolean tryRelease(int releases) {
+                //重入次数-释放的个数
+                int c = getState() - releases;
+                //当前线程不是该锁的独占者抛出异常(或者说当前线程未持有该锁)
+                if (Thread.currentThread() != getExclusiveOwnerThread())
+                    throw new IllegalMonitorStateException();
+                //锁的占用情况（true表示还在占用，false表示已全部释放）
+                boolean free = false;
+                //已全部释放
+                if (c == 0) {
+                    free = true;
+                    //设置独占者线程为null
+                    setExclusiveOwnerThread(null);
+                }
+                //状态更新
+                setState(c);
+                //返回当前锁状态
+                return free;
+            }
+    		//该锁是否被当前线程独占
+            protected final boolean isHeldExclusively() {
+                // While we must in general read state before owner,
+                // we don't need to do so to check if current thread is owner
+                return getExclusiveOwnerThread() == Thread.currentThread();
+            }
+    
+            final ConditionObject newCondition() {
+                //ConditionObject是AQS中的一个内部类
+                return new ConditionObject();
+            }
+    
+            // Methods relayed from outer class
+    		//获取独占者线程
+            final Thread getOwner() {
+                return getState() == 0 ? null : getExclusiveOwnerThread();
+            }
+    		//当前线程拥有该锁的数量（重入次数）
+            final int getHoldCount() {
+                return isHeldExclusively() ? getState() : 0;
+            }
+    		//是否已被占用
+            final boolean isLocked() {
+                return getState() != 0;
+            }
+    
+            /**
+             * 反序列化
+             */
+            private void readObject(java.io.ObjectInputStream s)
+                throws java.io.IOException, ClassNotFoundException {
+                //从此流中读取当前类的非静态和非瞬态字段。这只能从被反序列化的类的readObject方法调用。如果以其他方式调用它
+                s.defaultReadObject();
+                setState(0); // reset to unlocked state
+            }
+        }
+    
+    
+    //非公平同步实现（默认采用）
+    static final class NonfairSync extends Sync {
+        private static final long serialVersionUID = 7316153563782823691L;
+        protected final boolean tryAcquire(int acquires) {
+            return nonfairTryAcquire(acquires);
+        }
+    }
+    
+    //以下是ReentrantLock中重要方法的实现
+    public void lock() {
+        sync.acquire(1);
+    }
+    
+    public boolean tryLock() {
+        return sync.nonfairTryAcquire(1);
+    }
+    
+    public void unlock() {
+        sync.release(1);
+    }
+    
+    public final boolean release(int arg) {
+        if (tryRelease(arg)) {
+            Node h = head;
+            if (h != null && h.waitStatus != 0)
+                unparkSuccessor(h);
+            return true;
+        }
+        return false;
+    }
+    ```
+
+  - Semaphore实现
+
+    ```java
+    abstract static class Sync extends AbstractQueuedSynchronizer {
+        private static final long serialVersionUID = 1192457210091910933L;
+    
+        Sync(int permits) {
+            setState(permits);
+        }
+    
+        final int getPermits() {
+            return getState();
+        }
+    
+        //循环CAS
+        final int nonfairTryAcquireShared(int acquires) {
+            for (;;) {
+                //可用许可数量
+                int available = getState();
+                //请求后剩余许可数量
+                int remaining = available - acquires;
+                //如果剩余许可数量小于0则直接返回（不进行设置），如果剩余数量大于0则尝试CAS设置剩余数量，如果成功则返回失败则再次进入循环再次尝试CAS设置
+                if (remaining < 0 ||
+                    compareAndSetState(available, remaining))
+                    return remaining;
+            }
+        }
+        protected final boolean tryReleaseShared(int releases) {
+            for (;;) {
+                int current = getState();
+                int next = current + releases;
+                //整型溢出
+                if (next < current) // overflow
+                    throw new Error("Maximum permit count exceeded");
+                //循环CAS
+                if (compareAndSetState(current, next))
+                    return true;
+            }
+        }
+    //减少可用许可
+        final void reducePermits(int reductions) {
+            for (;;) {
+                int current = getState();
+                int next = current - reductions;
+                //后验条件不成立
+                if (next > current) // underflow
+                    throw new Error("Permit count underflow");
+                //CAS循环
+                if (compareAndSetState(current, next))
+                    return;
+            }
+        }
+    //许可归零
+        final int drainPermits() {
+            for (;;) {
+                int current = getState();
+                //当前许可为0直接推出否则CAS循环设置许可为0
+                if (current == 0 || compareAndSetState(current, 0))
+                    return current;
+            }
+        }
+    }
+    
+    //非公平实现
+    static final class NonfairSync extends Sync {
+        private static final long serialVersionUID = -2694183684443567898L;
+    
+        NonfairSync(int permits) {
+            super(permits);
+        }
+    
+        protected int tryAcquireShared(int acquires) {
+            return nonfairTryAcquireShared(acquires);
+        }
+    }
+    
+    //信号量实现
+    public void acquire() throws InterruptedException {
+        sync.acquireSharedInterruptibly(1);
+    }
+    
+    public boolean tryAcquire() {
+        return sync.nonfairTryAcquireShared(1) >= 0;
+    }
+    
+    public void release() {
+        sync.releaseShared(1);
+    }
+    ```
+
+  - FutureTask实现
+
+    - FutureTask并没有直接显式的含有一个AQS实现类而是直接内部实现了一个AQS，除此以外FutureTask内部含有一个WaitNode类用于保存该future对应的Thread
+
+      ```java
+      static final class WaitNode {
+          volatile Thread thread;
+          volatile WaitNode next;
+          WaitNode() { thread = Thread.currentThread(); }
+      }
+      ```
+
+  - 读写锁实现
+
+    - 读写锁的AQS实现由单个AQS管理读锁和写锁
+
+    - AQS内部维护一个等待线程队列，其中同时记录了等待线程的请求类型（独占还是共享），当锁可用时，如果位于队列头部的线程执行写入则会得到该锁，如果执行的是读操作则队列中第一个写入线程之前的所有线程都会得到这个锁
+
+      ```java
+      //写线程请求
+      protected final boolean tryAcquire(int acquires) {
+          Thread current = Thread.currentThread();
+          //获取当前持有读锁和写锁的总数
+          int c = getState();
+          //获取写锁数量
+          int w = exclusiveCount(c);
+          
+          if (c != 0) {
+              // //如果总锁！=0且写锁数量为0-->多个读线程-->写线程互斥
+              //如果总锁！=0且写线程！=0且当前请求的线程不是写锁的独占线程-->有一个写线程而且不是请求的线程-->写写互斥
+              if (w == 0 || current != getExclusiveOwnerThread())
+                  return false;
+              //溢出
+              if (w + exclusiveCount(acquires) > MAX_COUNT)
+                  throw new Error("Maximum lock count exceeded");
+              // 重入
+              setState(c + acquires);
+              return true;
+          }
+          //没有写线程和读线程的情况
+         //当前线程需要阻塞或者CAS设置失败
+          if (writerShouldBlock() ||
+              !compareAndSetState(c, c + acquires))
+              return false;
+          //设置独占
+          setExclusiveOwnerThread(current);
+          return true;
+      }
+      
+      //读线程请求
+      @ReservedStackAccess
+      protected final int tryAcquireShared(int unused) {
+          Thread current = Thread.currentThread();
+          int c = getState();
+          //有写线程且不是当前线程-->请求失败
+          if (exclusiveCount(c) != 0 &&
+              getExclusiveOwnerThread() != current)
+              return -1;
+          //读线程数量
+          int r = sharedCount(c);
+          //该线程不需要阻塞，读线程不没有达到最大，CAS尝试增加读线程成功
+          if (!readerShouldBlock() &&
+              r < MAX_COUNT &&
+              compareAndSetState(c, c + SHARED_UNIT)) {
+              //第一个读线程设置
+              if (r == 0) {
+                  firstReader = current;
+                  firstReaderHoldCount = 1;
+                  //第一个读线程就是我
+              } else if (firstReader == current) {
+                  firstReaderHoldCount++;
+              } else {
+                  //最后一个读线程的计数器
+                  HoldCounter rh = cachedHoldCounter;
+                  //计数器为null或者计数器所属线程不是当前线程
+                  if (rh == null ||
+                      rh.tid != LockSupport.getThreadId(current))
+                      //计数设置
+                      cachedHoldCounter = rh = readHolds.get();
+                  else if (rh.count == 0)
+                      readHolds.set(rh);
+                  rh.count++;
+              }
+              return 1;
+          }
+          return fullTryAcquireShared(current);
+      }
+      
+      //公平锁中writerShouldBlock实现
+      final boolean writerShouldBlock() {
+          //查询是否有线程一直在等待比当前线程更长的时间
+          return hasQueuedPredecessors();
+      }
+      
+      //非公平锁实现
+      final boolean writerShouldBlock() {
+          return false; // writers can always barge
+      }
+      
+      
+      
+      final boolean readerShouldBlock() {
+      //作为避免无限期写入器饥饿的启发式方法，如果暂时出现在队列头(如果存在)的线程是等待写入器，则阻塞。这只是一种概率效应，因为如果在其他尚未从队列中耗尽的启用的读取器后面有一个等待的写入器，那么新的读取器将不会阻塞
+          return apparentlyFirstQueuedIsExclusive();
+      }
+      
+      final boolean readerShouldBlock() {
+          ///查询是否有线程一直在等待比当前线程更长的时间
+          return hasQueuedPredecessors();
+      }
+      ```
+
       
 
+    
