@@ -78,4 +78,56 @@
           | 集群服务名               | spring.cloud.nacos.config.cluster-name    |                            |                                                              |
 
           - 不同组或者不同namespace之间无法通信
+  
+- ## Sentinel
 
+  - 使用
+
+    - 引入依赖（已包含在spring cloud start依赖管理中）
+
+    - 使用`@SentinelResource` 注解用来标识资源是否被限流、降级。
+
+      ```java
+      @SentinelResource(fallback = "fallback")
+      @RequestMapping("/testSentinel")
+      public String testSentinel() throws Throwable {
+          throw new Throwable();
+      }
+      
+      public String fallback(Throwable e)
+      {
+          e.printStackTrace();
+          return "error";
+      }
+      ```
+
+      - 除了可以添加在请求方法上还可以添加在普通类上（表示被限制的资源）
+
+  - SentinelResource注解
+
+    - blockHandler属性
+      - 当服务被限流，被拒绝的请求将会走blockHandler指定的方法，blockHandler指定的方法必须在SentinelResource所在的类中
+    - blockHandlerClass
+      - 如果想要使用相同的限流逻辑可以指定Class（同时需要指定blockHandler，blockHandler同样作为方法名，且blockHandler指定的方法名称必须时static方法）
+    - fallback
+      - 请求失败的回调函数的方法名称
+    - fallbackClass
+      - 和blockHandlerClass基本类似（同样要求fallback指定的方法是静态方法）
+    - exceptionsToTrace
+      - 指定需要关注的异常类型
+    - exceptionsToIgnore
+      - 可忽略的异常类型
+    - defaultFallback
+      - 默认采用的回调函数方法名称，该方法不应该有任何参数，返回值和SentinelResource标注的方法相同
+
+  - feign支持
+
+    - 启动sentinel支持
+
+      ```yml
+      feign:
+        sentinel:
+          enabled: true
+      ```
+
+  - 

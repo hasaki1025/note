@@ -575,7 +575,7 @@
 
         ```java
         private void resetLock() {
-            UNSAFE.putObjectVolatile(this, lockOffset, new ReentrantLock());//原子的方式重新赋值该锁的引用
+            UNSAFE.putObjectVolatile(this, lockOffset, new ReentrantLock());//直接操作内存（在lockOffset位置放一个ReentrantLock）
         }
         private static final sun.misc.Unsafe UNSAFE;
         private static final long lockOffset;
@@ -583,7 +583,7 @@
             try {
                 UNSAFE = sun.misc.Unsafe.getUnsafe();//初始化Unsafe
                 Class<?> k = CopyOnWriteArrayList.class;
-                lockOffset = UNSAFE.objectFieldOffset//获取到lock所在一个long的偏移量，通过该偏移量和Unsafe的方法能直接操作该属性
+                lockOffset = UNSAFE.objectFieldOffset//获取到lock该成员变量在内存中的偏移地址
                     (k.getDeclaredField("lock"));
             } catch (Exception e) {
                 throw new Error(e);
