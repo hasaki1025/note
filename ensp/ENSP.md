@@ -308,13 +308,125 @@
     
       - 基于链路状态协议
       - 适用于大型网络
+      
+      - 使用配置
+      
+        ```shell
+        ospf 1 #开启ospf
+        area 1#指定区域
+        network ip-address 子网掩码反码#指定开发路由（在区域下配置）
+        dis ospf lsdb #查看ospf数据库
+        abr-summary [汇总后的网络号] [子网掩码] #在指定区域下配置汇总路由
+        ```
+      
+      - Route-ID
+      
+        - 除了OSPF之外其他路由协议也可以使用Route-ID（但是可以为OSPF单独指定RouteID）
+      
+        - 未指定Route-ID则采用最大的loopback接口的IP作为Route-id,如果没有loopback接口则使用该路由上所有接口最大的IP地址作为Route-ID（对于loopback和物理接口哪个先配置就用哪个）
+      
+        - 指令
+      
+          ```shell
+          ospf 1 router id [id] #可覆盖全局RouterID
+          router id [ip-address]#手工配置全局routeID（不会改变OSPFrouterID）
+          dis router id
+          ```
+      
+          - OSPF的RouterID不会改变
+      
+        - 优先级：全局Route-ID>最大环回口>最大物理接口
+      
+      - OSPF中DR的选举
+      
+        - 广播型网络（以太网）或者NBMA类型网络且至少含有两个路由器采用DR和BDR机制
+      
+        - 优先级高的路由器称为DR，默认情况下所有路由器优先级相同，优先级相同比较Router-ID大小
+      
+          ```shell
+          int g0/0/0
+          ospf dr-priority [优先级大小]#为0则不会参与DR选举
+          ```
+      
+          - DR选举采用非抢占式，选举完成后更高优先级的路由进入也不会抢占DR
+      
+        - 选举过程
+      
+          - 接口有效时DR和BDR暂未出现，此时正在发送hello报文阶段，同时开启一个计数器，计数器的值为40s(四次hello报文，等待建立邻居关系)
+          - 计时结束后，路由之间邻居关系确立，检查hello报文中所有to-way状态的邻居的优先级、DR、BDR字段，列出一个具有选举资格的路由器列表
+          - 收集完DR和BDR字段后，如果DR未选举但是BDR已选举则从BDR根据优先级等规则选举出DR
+          - 如果BDR未选举，则从所有邻居中选举出BDR
+          - BDR选举完成后选举DR
   
-  
-  
-  
-  
-  
-  
-  
-  
-  
+  - IS-IS协议
+    - ISIS直接运行在链路层
+    - ISIS基本概念
+      - 报文格式
+        - 数据链路报文头
+        - ISIS固定报文头
+        - TLV
+          - T：类型
+          - L：value字段长度
+          - V：value字段，保存报文信息
+      - 地址概念
+        - 基本概念
+          - IS:对标路由器
+          - ES：主机
+          - DIS：DR
+          - SystemID:RouterID
+          - PDU:IP报文
+          - LSP：对标LSA
+          - NSAP:IP 地址
+            - 基本组成
+              - IDP（类似主网络号）
+              - DSP
+                - HODSP：子网号
+                - SystemID:主机IP
+                - NSEL：端口号(在ISIS中一般为0)
+            - NET()基本格式为(IDP+HODSP).SystemIP.NSEL
+    - ISIS基本流程
+      - 邻接关系建立：hello报文发送（也称为IIH）
+      - LSDB同步：互相发送LSP
+      - SPF路由计算：
+      - 路由表生成
+    - 网络类型
+      - ISIS支持广播型网络（选举DIS），点对点网络，不支持NBMA和点到多点
+        - 选举规则
+          - 接口优先级：默认64数值越大优先级越高
+          - 优先级相同比较链路层地址（SNPA）：在LAN中是MAC地址
+          - SNPA相同比较SystemID
+
+- Vlan
+
+  - vlan的作用是为了隔离广播域
+
+  - vlan的基本使用（通过接口划分vlan）
+
+    ```shell
+    vlan [编号]#创建vlan
+    vlan batch 2 to 100 #创建从2到100的vlan
+    int e0/0/0
+    port link-type access#修改交换机端口类型为access，默认为hybrid
+    port default vlan [vlan编号]#修改默认vlan，所有接口默认都在vlan1中
+    dis vlan#查看vlan信息
+    
+    port trunk allow-pass vlan [vlan编号1][vlan编号2][vlan编号3]#在华为ensp中trunk默认只允许通过vlan1，通过该命令配置可允许通过的vlan
+    port trunk pvid vlan [vlan编号]#配置trunk接口的vlan标记
+    ```
+
+  - vlan基本原理
+
+    - 在原本的以太网帧格式中添加一个字段用于保存vlan标识，帧在交换机中都是带有vlan标记的（Tagged）,不带有标记的以太网帧（Untagged）来自于对端设备，接受该帧的端口将会给该帧添加上Vlan标识（基于以下五种方法，优先级从上往下依次提高）
+      - 通过接口：给接口划分vlan
+      - 通过协议
+      - 通过子网：IP信息划分
+      - 通过MAC地址：配置了MAC表和VlanID的映射关系后交换机可通过该表贴上Vlan标记
+      - 通过策略: 可基于MAC+IP、MAC+IP+接口划分vlan
+    - 链路和端口类型
+      - Access Link类型：主机和交换机之间的链接，链路上的帧为不带tag的帧
+      - Trunk类型：交换机和交换机之间的链接，一般带有tag，也可以通过不带有Tag的
+      - Access Port类型：交换机连接主机的端口，接受帧的时候如果是Untagged则带上tag，发送时去除tag，只允许带有和端口相同的tag的帧通过
+      - Trunk Port类型：交换机和交换机相连的端口，允许多个vlan的帧通过，接受时如果帧没有vlan则标记为该接口的vlan，如果有tag则判断该端口是否允许该vlan的帧通过，发送帧时如果该帧的vlan和端口的默认端口一致则剥离tag后发送如果不一致则直接发送
+      - hyrid Port类型：既可以连接主机也可以连接交换机，允许多种Vlan帧通过，接收时和Trunk一样，发送时会判断该vlan的在本端口是Untag还是tag，如果是Untag则剥离后发送，如果是tag则直接发送
+    - 默认端口
+      - 每个端口都可以配置一个默认vlan
