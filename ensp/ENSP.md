@@ -418,15 +418,99 @@
 
     - 在原本的以太网帧格式中添加一个字段用于保存vlan标识，帧在交换机中都是带有vlan标记的（Tagged）,不带有标记的以太网帧（Untagged）来自于对端设备，接受该帧的端口将会给该帧添加上Vlan标识（基于以下五种方法，优先级从上往下依次提高）
       - 通过接口：给接口划分vlan
+      
       - 通过协议
+      
       - 通过子网：IP信息划分
+      
+        - 指令
+      
+          ```shell
+          #进入vlan接口
+          ip-sub ip [ip-address] [掩码位数]#建立子网和vlan之间关系
+          #进入指定接口
+          ip-sub enable
+          ```
+      
       - 通过MAC地址：配置了MAC表和VlanID的映射关系后交换机可通过该表贴上Vlan标记
+      
+        - 建立MAC和vlan的映射表将MAC地址和vlan绑定
+      
+          ```shell
+          dis mac-address#查看MAC地址表
+          vlan 10#进入vlan界面
+          mac-vlan mac-address [mac地址] [priority<优先级>]#配置vlan和mac的映射表
+          #需要解析mac地址的接口必须是hybrid接口且应该允许该mac地址对应的vlan通过
+          mac-vlan enable#在连接了需要mac映射vlan的接口下开启mac-vlan
+          ```
+      
+          
+      
       - 通过策略: 可基于MAC+IP、MAC+IP+接口划分vlan
+      
     - 链路和端口类型
       - Access Link类型：主机和交换机之间的链接，链路上的帧为不带tag的帧
       - Trunk类型：交换机和交换机之间的链接，一般带有tag，也可以通过不带有Tag的
       - Access Port类型：交换机连接主机的端口，接受帧的时候如果是Untagged则带上tag，发送时去除tag，只允许带有和端口相同的tag的帧通过
       - Trunk Port类型：交换机和交换机相连的端口，允许多个vlan的帧通过，接受时如果帧没有vlan则标记为该接口的vlan，如果有tag则判断该端口是否允许该vlan的帧通过，发送帧时如果该帧的vlan和端口的默认端口一致则剥离tag后发送如果不一致则直接发送
-      - hyrid Port类型：既可以连接主机也可以连接交换机，允许多种Vlan帧通过，接收时和Trunk一样，发送时会判断该vlan的在本端口是Untag还是tag，如果是Untag则剥离后发送，如果是tag则直接发送
+      - hyrid Port类型：既可以连接主机也可以连接交换机，允许多种Vlan帧通过，接收时和Trunk一样，发送时会先判断该vlan是否能通过（tagged和untagged的并集），能通过则判断是否需要tag，如果需要tag则直接发送，如果需要Untagged则去除标签后转发
+      
     - 默认端口
       - 每个端口都可以配置一个默认vlan
+    
+  - vlan间通信
+  
+    - 方法一：二层交换机
+  
+      ![image-20230517155704949](ENSP.assets/image-20230517155704949.png)
+  
+    - 方法二：单臂路由
+  
+      ![image-20230517161308042](ENSP.assets/image-20230517161308042.png)
+  
+      - 配置交换机接口001和002为access，003为trunk
+  
+      - 配置路由：
+  
+        ```shell
+        int g0/0/0.1#进入子接口
+        dot1q termination vid 10#配置该子接口对应vlan
+        arp broadcast enable#开启arp广播
+        ```
+  
+    - 方法三：三层交换机（更多更好）
+  
+      ![image-20230517164428245](ENSP.assets/image-20230517164428245.png)
+  
+      - 在交换机（S3700不行，要S5700）中虚拟一个路由器，该路由有vlanif(vlan interface)接口，vlanif接口可以配置IP地址（模拟路由器）
+  
+        ```shell
+        #配置接口vlan
+        int vlanif [vlan编号]#创建vlanif接口
+        #配置vlanifip
+        ```
+
+- ARP
+
+  - 基本原理
+
+    - 主机发送的IP报文最终会被封装为MAC帧，需要知道MAC地址，为了解析IP对应的MAC地址，主机会先发送一个ARP请求（广播）其中包括目的IP，接收到该报文的主机会检查该报文中的目的IP是否是自己如果是自己则响应（单播）不是则丢弃
+
+      ```shell
+      arp static [IP-address] [mac-address]#静态添加ARP表
+      ```
+
+      
+
+  - ARP代理
+
+    - 路由器会隔离广播域，如果路由器接口开启了ARP代理功能则接收到ARP报文时会先检查是否自己是请求的IP不是则查找路由表检查是否有对应的接口可转发到指定网络。、
+
+      ```shell
+      arp-proxy enable#进入接口后配置
+      ```
+
+  - 免费ARP
+
+    - 将目的IP地址设置为自己的IP地址，如果有响应则代表这个网络中含有和自己相同的IP地址。免费ARP的目的是检测同一网络是否存在IP重复
+
