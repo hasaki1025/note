@@ -242,7 +242,7 @@
     flushall
     ```
 
-- ##Redis数据类型
+- ## Redis数据类型
 
   - string
 

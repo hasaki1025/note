@@ -299,7 +299,7 @@
       - `ExecutorType.REUSE`：该类型的执行器会复用预处理语句。
       - `ExecutorType.BATCH`：该类型的执行器会批量执行所有更新语句，如果 SELECT 在多个更新中间执行，将在必要时将多条更新语句分隔开来，以方便理解。
     
-  - ###SqlSession
+  - ### SqlSession
 
     - 正如之前所提到的，SqlSession 在 MyBatis 中是非常强大的一个类。它包含了所有执行语句、提交或回滚事务以及获取映射器实例的方法。
 
